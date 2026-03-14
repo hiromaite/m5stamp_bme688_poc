@@ -1,0 +1,8 @@
+{
+  "name": "bme68x_sensorapi",
+  "version": "4.4.8",
+  "description": "Bosch Sensortec BME68x SensorAPI vendored for local PlatformIO builds",
+  "build": {
+    "includeDir": "src"
+  }
+}
