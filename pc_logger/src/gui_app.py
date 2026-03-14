@@ -1,0 +1,587 @@
+from __future__ import annotations
+
+import csv
+import ctypes
+import os
+import sys
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Deque, Dict, List, Optional
+
+import pyqtgraph as pg
+import PySide6
+import serial
+from PySide6.QtCore import QCoreApplication, QThread, QTimer, Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QPlainTextEdit,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+from serial.tools import list_ports
+
+from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
+
+
+WINDOWS_ES_CONTINUOUS = 0x80000000
+WINDOWS_ES_SYSTEM_REQUIRED = 0x00000001
+WINDOWS_ES_DISPLAY_REQUIRED = 0x00000002
+
+
+def configure_qt_runtime() -> None:
+    pyside_dir = Path(PySide6.__file__).resolve().parent
+    plugins_dir = pyside_dir / "Qt" / "plugins"
+    platform_plugins_dir = plugins_dir / "platforms"
+    qt_lib_dir = pyside_dir / "Qt" / "lib"
+
+    if not os.environ.get("QT_PLUGIN_PATH"):
+        os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
+    if not os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH"):
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platform_plugins_dir)
+    if not os.environ.get("DYLD_FRAMEWORK_PATH"):
+        os.environ["DYLD_FRAMEWORK_PATH"] = str(qt_lib_dir)
+    if not os.environ.get("DYLD_LIBRARY_PATH"):
+        os.environ["DYLD_LIBRARY_PATH"] = str(qt_lib_dir)
+
+    QCoreApplication.setLibraryPaths([str(plugins_dir)])
+
+
+@dataclass
+class SegmentState:
+    segment_id: str
+    label: str
+    target_ppm: str
+    start_iso: str
+    end_iso: str = ""
+
+
+class SerialWorker(QThread):
+    line_received = Signal(str)
+    connection_changed = Signal(bool, str)
+    error_occurred = Signal(str)
+
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.5):
+        super().__init__()
+        self._port = port
+        self._baudrate = baudrate
+        self._timeout = timeout
+        self._running = True
+        self._serial: Optional[serial.Serial] = None
+
+    def run(self) -> None:
+        try:
+            self._serial = serial.Serial(self._port, self._baudrate, timeout=self._timeout)
+            self.connection_changed.emit(True, self._port)
+            while self._running and self._serial:
+                line_bytes = self._serial.readline()
+                if not line_bytes:
+                    continue
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if line:
+                    self.line_received.emit(line)
+        except serial.SerialException as exc:
+            self.error_occurred.emit(str(exc))
+        finally:
+            if self._serial:
+                try:
+                    self._serial.close()
+                except serial.SerialException:
+                    pass
+            self.connection_changed.emit(False, self._port)
+
+    def stop(self) -> None:
+        self._running = False
+
+    def send_command(self, command: str) -> None:
+        if not self._serial or not self._serial.is_open:
+            return
+        self._serial.write((command.strip() + "\n").encode("utf-8"))
+        self._serial.flush()
+
+
+class ProfileDialog(QDialog):
+    def __init__(self, parent: QWidget, current_profile: Dict[str, str]):
+        super().__init__(parent)
+        self.setWindowTitle("Profile Settings")
+
+        self.temp_edit = QLineEdit(current_profile.get("heater_profile_temp_c", "320,100,100,100,200,200,200,320,320,320"))
+        self.dur_edit = QLineEdit(current_profile.get("heater_profile_duration_mult", "5,2,10,30,5,5,5,5,5,5"))
+        self.base_edit = QLineEdit(current_profile.get("heater_profile_time_base_ms", "140"))
+
+        form = QFormLayout()
+        form.addRow("Temperature (C)", self.temp_edit)
+        form.addRow("Duration Mult", self.dur_edit)
+        form.addRow("Time Base (ms)", self.base_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def profile_command(self) -> str:
+        return (
+            f"SET_PROFILE temp={self.temp_edit.text().strip()} "
+            f"dur={self.dur_edit.text().strip()} "
+            f"base_ms={self.base_edit.text().strip()}"
+        )
+
+    def profile_state(self) -> Dict[str, str]:
+        return {
+            "heater_profile_temp_c": self.temp_edit.text().strip(),
+            "heater_profile_duration_mult": self.dur_edit.text().strip(),
+            "heater_profile_time_base_ms": self.base_edit.text().strip(),
+        }
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("H2S Benchmark GUI Shell")
+        self.resize(1440, 900)
+
+        self.worker: Optional[SerialWorker] = None
+        self.is_connected = False
+        self.is_recording = False
+        self.current_segment: Optional[SegmentState] = None
+        self.segment_counter = 0
+        self.recording_path: Optional[Path] = None
+        self.csv_file = None
+        self.csv_writer = None
+        self.profile_state: Dict[str, str] = {
+            "heater_profile_id": "unknown",
+            "heater_profile_temp_c": "",
+            "heater_profile_duration_mult": "",
+            "heater_profile_time_base_ms": "",
+        }
+        self.data_buffers = {
+            "time": deque(maxlen=5000),
+            "temp": deque(maxlen=5000),
+            "humidity": deque(maxlen=5000),
+            "pressure": deque(maxlen=5000),
+            "heater": deque(maxlen=5000),
+            "gas": [deque(maxlen=5000) for _ in range(10)],
+        }
+        self.last_plot_time_ms = None
+
+        self._build_ui()
+        self._setup_plots()
+        self._wire_events()
+        self.refresh_ports()
+
+        self.plot_timer = QTimer(self)
+        self.plot_timer.timeout.connect(self.refresh_plots)
+        self.plot_timer.start(500)
+
+    def _build_ui(self) -> None:
+        central = QWidget()
+        root = QVBoxLayout(central)
+
+        controls = QGroupBox("Connection and Session")
+        controls_layout = QGridLayout(controls)
+
+        self.port_combo = QComboBox()
+        self.scan_button = QPushButton("Scan")
+        self.connect_button = QPushButton("Connect")
+        self.disconnect_button = QPushButton("Disconnect")
+        self.disconnect_button.setEnabled(False)
+
+        self.record_button = QPushButton("Record")
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+
+        self.start_segment_button = QPushButton("Start Segment")
+        self.end_segment_button = QPushButton("End Segment")
+        self.start_segment_button.setEnabled(False)
+        self.end_segment_button.setEnabled(False)
+
+        self.profile_button = QPushButton("Profile Settings")
+        self.profile_button.setEnabled(False)
+
+        self.label_edit = QLineEdit("air_baseline")
+        self.target_ppm_edit = QLineEdit("0")
+        self.operator_edit = QLineEdit("operator")
+
+        self.status_label = QLabel("Disconnected")
+        self.profile_label = QLabel("Profile: unknown")
+
+        controls_layout.addWidget(QLabel("Port"), 0, 0)
+        controls_layout.addWidget(self.port_combo, 0, 1)
+        controls_layout.addWidget(self.scan_button, 0, 2)
+        controls_layout.addWidget(self.connect_button, 0, 3)
+        controls_layout.addWidget(self.disconnect_button, 0, 4)
+
+        controls_layout.addWidget(QLabel("Operator"), 1, 0)
+        controls_layout.addWidget(self.operator_edit, 1, 1)
+        controls_layout.addWidget(QLabel("Segment Label"), 1, 2)
+        controls_layout.addWidget(self.label_edit, 1, 3)
+        controls_layout.addWidget(QLabel("Target ppm"), 1, 4)
+        controls_layout.addWidget(self.target_ppm_edit, 1, 5)
+
+        controls_layout.addWidget(self.record_button, 2, 0)
+        controls_layout.addWidget(self.stop_button, 2, 1)
+        controls_layout.addWidget(self.start_segment_button, 2, 2)
+        controls_layout.addWidget(self.end_segment_button, 2, 3)
+        controls_layout.addWidget(self.profile_button, 2, 4)
+
+        controls_layout.addWidget(self.status_label, 3, 0, 1, 3)
+        controls_layout.addWidget(self.profile_label, 3, 3, 1, 3)
+
+        root.addWidget(controls)
+
+        splitter = QSplitter(Qt.Vertical)
+        self.environment_plot = pg.PlotWidget(title="Environment")
+        self.sensor_plot = pg.PlotWidget(title="Gas Resistance and Heater Profile")
+        splitter.addWidget(self.environment_plot)
+        splitter.addWidget(self.sensor_plot)
+        splitter.setSizes([400, 400])
+        root.addWidget(splitter, stretch=1)
+
+        log_group = QGroupBox("Event Log")
+        log_layout = QVBoxLayout(log_group)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        log_layout.addWidget(self.log_view)
+        root.addWidget(log_group, stretch=0)
+
+        self.setCentralWidget(central)
+
+    def _setup_plots(self) -> None:
+        pg.setConfigOptions(antialias=True)
+
+        self.environment_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.sensor_plot.showGrid(x=True, y=True, alpha=0.3)
+
+        self.environment_plot.addLegend()
+        self.sensor_plot.addLegend(offset=(10, 10))
+
+        self.temperature_curve = self.environment_plot.plot(pen=pg.mkPen("#b43f3f", width=2), name="Temp C")
+        self.humidity_curve = self.environment_plot.plot(pen=pg.mkPen("#3f7fb4", width=2), name="Humidity %")
+
+        env_plot_item = self.environment_plot.getPlotItem()
+        self.environment_pressure_view = pg.ViewBox()
+        env_plot_item.showAxis("right")
+        env_plot_item.scene().addItem(self.environment_pressure_view)
+        env_plot_item.getAxis("right").linkToView(self.environment_pressure_view)
+        self.environment_pressure_view.setXLink(env_plot_item)
+        env_plot_item.getAxis("right").setLabel("Pressure hPa")
+        self.pressure_curve = pg.PlotCurveItem(pen=pg.mkPen("#2f8f2f", width=2))
+        self.environment_pressure_view.addItem(self.pressure_curve)
+        env_plot_item.vb.sigResized.connect(self._sync_environment_axes)
+
+        self.gas_curves = []
+        colors = [
+            "#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6",
+            "#ec4899", "#14b8a6", "#f97316", "#64748b", "#84cc16",
+        ]
+        for index, color in enumerate(colors):
+            curve = self.sensor_plot.plot(pen=pg.mkPen(color, width=1.5), name=f"Gas {index}")
+            self.gas_curves.append(curve)
+
+        sensor_plot_item = self.sensor_plot.getPlotItem()
+        self.sensor_heater_view = pg.ViewBox()
+        sensor_plot_item.showAxis("right")
+        sensor_plot_item.scene().addItem(self.sensor_heater_view)
+        sensor_plot_item.getAxis("right").linkToView(self.sensor_heater_view)
+        self.sensor_heater_view.setXLink(sensor_plot_item)
+        sensor_plot_item.getAxis("right").setLabel("Heater C")
+        self.heater_curve = pg.PlotCurveItem(pen=pg.mkPen("#111827", width=2))
+        self.sensor_heater_view.addItem(self.heater_curve)
+        sensor_plot_item.vb.sigResized.connect(self._sync_sensor_axes)
+
+    def _wire_events(self) -> None:
+        self.scan_button.clicked.connect(self.refresh_ports)
+        self.connect_button.clicked.connect(self.connect_serial)
+        self.disconnect_button.clicked.connect(self.disconnect_serial)
+        self.record_button.clicked.connect(self.start_recording)
+        self.stop_button.clicked.connect(self.stop_recording)
+        self.start_segment_button.clicked.connect(self.start_segment)
+        self.end_segment_button.clicked.connect(self.end_segment)
+        self.profile_button.clicked.connect(self.open_profile_dialog)
+
+    def _sync_environment_axes(self) -> None:
+        env_plot_item = self.environment_plot.getPlotItem()
+        self.environment_pressure_view.setGeometry(env_plot_item.vb.sceneBoundingRect())
+        self.environment_pressure_view.linkedViewChanged(env_plot_item.vb, self.environment_pressure_view.XAxis)
+
+    def _sync_sensor_axes(self) -> None:
+        sensor_plot_item = self.sensor_plot.getPlotItem()
+        self.sensor_heater_view.setGeometry(sensor_plot_item.vb.sceneBoundingRect())
+        self.sensor_heater_view.linkedViewChanged(sensor_plot_item.vb, self.sensor_heater_view.XAxis)
+
+    def log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_view.appendPlainText(f"[{timestamp}] {message}")
+
+    def refresh_ports(self) -> None:
+        current = self.port_combo.currentText()
+        self.port_combo.clear()
+        ports = [port.device for port in list_ports.comports()]
+        self.port_combo.addItems(ports)
+        if current and current in ports:
+            self.port_combo.setCurrentText(current)
+        self.log(f"Scanned ports: {', '.join(ports) if ports else 'none'}")
+
+    def connect_serial(self) -> None:
+        port = self.port_combo.currentText().strip()
+        if not port:
+            QMessageBox.warning(self, "No Port", "Select a serial port first.")
+            return
+
+        self.worker = SerialWorker(port)
+        self.worker.line_received.connect(self.handle_serial_line)
+        self.worker.connection_changed.connect(self.handle_connection_changed)
+        self.worker.error_occurred.connect(self.handle_serial_error)
+        self.worker.start()
+        self.log(f"Connecting to {port}")
+
+    def disconnect_serial(self) -> None:
+        if self.worker:
+            self.worker.stop()
+            self.worker.wait(1500)
+            self.worker = None
+        self.handle_connection_changed(False, self.port_combo.currentText())
+
+    def handle_connection_changed(self, connected: bool, port: str) -> None:
+        self.is_connected = connected
+        self.connect_button.setEnabled(not connected)
+        self.disconnect_button.setEnabled(connected)
+        self.record_button.setEnabled(connected and not self.is_recording)
+        self.start_segment_button.setEnabled(connected and self.is_recording and self.current_segment is None)
+        self.end_segment_button.setEnabled(connected and self.is_recording and self.current_segment is not None)
+        self.profile_button.setEnabled(connected and not self.is_recording)
+        self.status_label.setText(f"Connected: {port}" if connected else "Disconnected")
+        if connected and self.worker:
+            self.worker.send_command("GET_PROFILE")
+            self.worker.send_command("PING")
+        self.log(f"{'Connected' if connected else 'Disconnected'} {port}")
+
+    def handle_serial_error(self, message: str) -> None:
+        self.log(f"Serial error: {message}")
+        QMessageBox.critical(self, "Serial Error", message)
+        self.disconnect_serial()
+
+    def start_recording(self) -> None:
+        output_dir = Path("data")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("session_%Y%m%d_%H%M%S.csv")
+        self.recording_path = output_dir / timestamp
+        self.csv_file = self.recording_path.open("w", newline="", encoding="utf-8")
+        self._write_csv_header()
+        self.csv_writer = csv.DictWriter(
+            self.csv_file,
+            fieldnames=[*OUTPUT_COLUMNS, "segment_id", "segment_label", "segment_target_ppm", "segment_start_iso", "segment_end_iso"],
+        )
+        self.csv_writer.writeheader()
+        self.csv_file.flush()
+
+        self.is_recording = True
+        self.record_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.start_segment_button.setEnabled(True)
+        self.profile_button.setEnabled(False)
+        self._set_sleep_prevention(True)
+        self.log(f"Recording started: {self.recording_path}")
+
+    def stop_recording(self) -> None:
+        if self.current_segment:
+            self.end_segment()
+
+        self.is_recording = False
+        self.record_button.setEnabled(self.is_connected)
+        self.stop_button.setEnabled(False)
+        self.start_segment_button.setEnabled(False)
+        self.end_segment_button.setEnabled(False)
+        self.profile_button.setEnabled(self.is_connected)
+        self._set_sleep_prevention(False)
+
+        if self.csv_file:
+            self.csv_file.close()
+        self.csv_file = None
+        self.csv_writer = None
+        self.log(f"Recording stopped: {self.recording_path}")
+
+    def start_segment(self) -> None:
+        if not self.is_recording or self.current_segment is not None:
+            return
+
+        self.segment_counter += 1
+        self.current_segment = SegmentState(
+            segment_id=f"seg_{self.segment_counter:03d}",
+            label=self.label_edit.text().strip() or "unlabeled",
+            target_ppm=self.target_ppm_edit.text().strip() or "",
+            start_iso=datetime.now().isoformat(timespec="seconds"),
+        )
+        self.start_segment_button.setEnabled(False)
+        self.end_segment_button.setEnabled(True)
+        self.log(
+            f"Segment started: {self.current_segment.segment_id} "
+            f"label={self.current_segment.label} target_ppm={self.current_segment.target_ppm}"
+        )
+
+    def end_segment(self) -> None:
+        if not self.current_segment:
+            return
+
+        self.current_segment.end_iso = datetime.now().isoformat(timespec="seconds")
+        self.log(f"Segment ended: {self.current_segment.segment_id}")
+        self.current_segment = None
+        self.start_segment_button.setEnabled(self.is_recording)
+        self.end_segment_button.setEnabled(False)
+
+    def open_profile_dialog(self) -> None:
+        dialog = ProfileDialog(self, self.profile_state)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        self.profile_state.update(dialog.profile_state())
+        self.update_profile_label()
+        if self.worker:
+            self.worker.send_command(dialog.profile_command())
+        self.log("Profile update command sent")
+
+    def update_profile_label(self) -> None:
+        profile_id = self.profile_state.get("heater_profile_id", "unknown")
+        temp = self.profile_state.get("heater_profile_temp_c", "")
+        self.profile_label.setText(f"Profile: {profile_id} | temp={temp}")
+
+    def handle_serial_line(self, line: str) -> None:
+        parsed = parse_serial_line(line)
+        if parsed is None:
+            return
+
+        if parsed.line_type == "profile":
+            self.profile_state.update(parsed.payload)
+            self.update_profile_label()
+            self.log(f"Profile update: {parsed.raw_line}")
+            return
+
+        if parsed.line_type in {"status", "event"}:
+            self.log(parsed.raw_line)
+            return
+
+        if parsed.line_type != "csv":
+            return
+
+        row = enrich_csv_row(parsed.payload, parsed.raw_line)
+        self._append_plot_data(parsed.payload)
+        if self.csv_writer and self.csv_file:
+            segment = self.current_segment
+            export_row = {
+                **row,
+                "segment_id": segment.segment_id if segment else "",
+                "segment_label": segment.label if segment else "",
+                "segment_target_ppm": segment.target_ppm if segment else "",
+                "segment_start_iso": segment.start_iso if segment else "",
+                "segment_end_iso": segment.end_iso if segment else "",
+            }
+            self.csv_writer.writerow(export_row)
+            self.csv_file.flush()
+
+    def _append_plot_data(self, payload: Dict[str, str]) -> None:
+        host_ms = float(payload["host_ms"])
+        if self.last_plot_time_ms is None:
+            self.last_plot_time_ms = host_ms
+        elapsed_s = (host_ms - self.last_plot_time_ms) / 1000.0
+        self.data_buffers["time"].append(elapsed_s)
+        self.data_buffers["temp"].append(float(payload["temp_c"]))
+        self.data_buffers["humidity"].append(float(payload["humidity_pct"]))
+        self.data_buffers["pressure"].append(float(payload["pressure_hpa"]))
+        gas_index = int(payload["gas_index"])
+        if 0 <= gas_index < len(self.data_buffers["gas"]):
+            self.data_buffers["gas"][gas_index].append(float(payload["gas_kohms"]))
+        heater_temp = self._heater_temp_for_step(int(payload["frame_step"]))
+        self.data_buffers["heater"].append(heater_temp)
+
+        current_len = len(self.data_buffers["time"])
+        for idx, series in enumerate(self.data_buffers["gas"]):
+            while len(series) < current_len:
+                series.append(float("nan"))
+
+    def _heater_temp_for_step(self, frame_step: int) -> float:
+        temp_string = self.profile_state.get("heater_profile_temp_c", "")
+        if not temp_string:
+            temp_string = "320,100,100,100,200,200,200,320,320,320"
+        temps = [float(part.strip()) for part in temp_string.split(",") if part.strip()]
+        if 1 <= frame_step <= len(temps):
+            return temps[frame_step - 1]
+        return float("nan")
+
+    def refresh_plots(self) -> None:
+        if not self.data_buffers["time"]:
+            return
+
+        x = list(self.data_buffers["time"])
+        self.temperature_curve.setData(x, list(self.data_buffers["temp"]))
+        self.humidity_curve.setData(x, list(self.data_buffers["humidity"]))
+        self.pressure_curve.setData(x, list(self.data_buffers["pressure"]))
+        for idx, curve in enumerate(self.gas_curves):
+            curve.setData(x, list(self.data_buffers["gas"][idx]))
+        self.heater_curve.setData(x, list(self.data_buffers["heater"]))
+
+    def _write_csv_header(self) -> None:
+        assert self.csv_file is not None
+        now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+        lines = [
+            "# file_format=h2s_benchmark_csv_v1",
+            f"# exported_at_iso={now_iso}",
+            f"# operator_id={self.operator_edit.text().strip()}",
+            f"# session_id={datetime.now().strftime('%Y%m%d_%H%M%S_run01')}",
+            "# gui_git_commit=working_tree",
+            "# board_type=M5StampS3",
+            "# sensor_type=BME688",
+            f"# serial_port={self.port_combo.currentText()}",
+            f"# heater_profile_id={self.profile_state.get('heater_profile_id', 'unknown')}",
+            f"# heater_profile_temp_c={self.profile_state.get('heater_profile_temp_c', '')}",
+            f"# heater_profile_duration_mult={self.profile_state.get('heater_profile_duration_mult', '')}",
+            f"# heater_profile_time_base_ms={self.profile_state.get('heater_profile_time_base_ms', '')}",
+            "# label_target_gas=H2S",
+            "# label_unit=ppm",
+            "# label_scope=exposure_segment",
+            "# notes=",
+        ]
+        self.csv_file.write("\n".join(lines) + "\n")
+
+    def _set_sleep_prevention(self, active: bool) -> None:
+        if sys.platform != "win32":
+            return
+
+        flags = WINDOWS_ES_CONTINUOUS
+        if active:
+            flags |= WINDOWS_ES_SYSTEM_REQUIRED | WINDOWS_ES_DISPLAY_REQUIRED
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.is_recording:
+            self.stop_recording()
+        self.disconnect_serial()
+        super().closeEvent(event)
+
+
+def main() -> int:
+    configure_qt_runtime()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,11 +1,13 @@
 # Python Logger PoC
 
-This directory contains a minimal Python logger PoC for the M5StampS3 BME688
-parallel-mode firmware.
+This directory contains the PC-side tooling for the M5StampS3 BME688
+parallel-mode workflow.
 
 ## Layout
 
-- `src/serial_logger.py`: serial receiver and CSV logger
+- `src/serial_logger.py`: serial receiver and CSV logger CLI PoC
+- `src/gui_app.py`: minimal GUI shell
+- `src/serial_protocol.py`: shared serial parsing helpers
 - `requirements.txt`: Python dependencies
 - `data/`: default output directory for captured logs
 
@@ -17,7 +19,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run
+## Run CLI Logger
 
 ```bash
 cd pc_logger
@@ -25,13 +27,32 @@ source .venv/bin/activate
 python src/serial_logger.py --port /dev/cu.usbmodem4101
 ```
 
-Useful options:
+## Run GUI
+
+```bash
+cd pc_logger
+source .venv/bin/activate
+python src/gui_app.py
+```
+
+Useful options for the CLI logger:
 
 ```bash
 python src/serial_logger.py --help
 ```
 
-By default the logger:
+The GUI currently provides:
+
+- port scan and connect/disconnect
+- live status view
+- record/stop controls
+- start/end exposure segment controls
+- current heater profile display
+- profile settings modal shell
+- live environmental plot
+- live gas-resistance plus heater-temperature plot
+
+The CLI logger by default:
 
 - listens at `115200` baud
 - captures only firmware lines that begin with `[csv]`
@@ -50,3 +71,10 @@ The saved CSV file uses the same columns plus:
 
 - `received_at_iso`
 - `source_line`
+
+The GUI currently understands these line families:
+
+- `[csv] ...`
+- `[profile] key=value`
+- `[status] key=value`
+- `[event] key=value`
