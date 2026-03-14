@@ -4,11 +4,10 @@ import csv
 import ctypes
 import os
 import sys
-from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Deque, Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pyqtgraph as pg
 import PySide6
@@ -20,9 +19,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QGridLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -41,6 +40,13 @@ from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 WINDOWS_ES_CONTINUOUS = 0x80000000
 WINDOWS_ES_SYSTEM_REQUIRED = 0x00000001
 WINDOWS_ES_DISPLAY_REQUIRED = 0x00000002
+SPAN_OPTIONS: List[Tuple[str, Optional[float]]] = [
+    ("10 min", 10 * 60.0),
+    ("30 min", 30 * 60.0),
+    ("1 hour", 60 * 60.0),
+    ("5 hours", 5 * 60 * 60.0),
+    ("All", None),
+]
 
 
 def configure_qt_runtime() -> None:
@@ -172,15 +178,21 @@ class MainWindow(QMainWindow):
             "heater_profile_time_base_ms": "",
         }
         self.data_buffers = {
-            "time": deque(maxlen=5000),
-            "temp": deque(maxlen=5000),
-            "humidity": deque(maxlen=5000),
-            "pressure": deque(maxlen=5000),
-            "heater": deque(maxlen=5000),
-            "gas": [deque(maxlen=5000) for _ in range(10)],
+            "environment": {
+                "time": [],
+                "temp": [],
+                "humidity": [],
+                "pressure": [],
+            },
+            "heater": {
+                "time": [],
+                "value": [],
+            },
+            "gas": [{"time": [], "value": []} for _ in range(10)],
         }
         self.last_plot_time_ms = None
         self.last_pong_iso = ""
+        self.selected_span_seconds: Optional[float] = None
 
         self._build_ui()
         self._setup_plots()
@@ -249,6 +261,18 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.profile_label, 3, 3, 1, 3)
 
         root.addWidget(controls)
+
+        span_group = QGroupBox("Plot Span")
+        span_layout = QHBoxLayout(span_group)
+        self.span_buttons: Dict[str, QPushButton] = {}
+        for label, seconds in SPAN_OPTIONS:
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, value=seconds, text=label: self.set_plot_span(text, value, checked))
+            span_layout.addWidget(button)
+            self.span_buttons[label] = button
+        self.span_buttons["All"].setChecked(True)
+        root.addWidget(span_group)
 
         splitter = QSplitter(Qt.Vertical)
         self.environment_plot = pg.PlotWidget(title="Environment")
@@ -320,6 +344,18 @@ class MainWindow(QMainWindow):
         self.end_segment_button.clicked.connect(self.end_segment)
         self.profile_button.clicked.connect(self.open_profile_dialog)
         self.reset_profile_button.clicked.connect(self.reset_profile)
+
+    def set_plot_span(self, label: str, seconds: Optional[float], checked: bool) -> None:
+        if not checked:
+            self.span_buttons[label].setChecked(True)
+            return
+
+        for other_label, button in self.span_buttons.items():
+            button.setChecked(other_label == label)
+
+        self.selected_span_seconds = seconds
+        self.log(f"Plot span set to {label}")
+        self.refresh_plots()
 
     def _sync_environment_axes(self) -> None:
         env_plot_item = self.environment_plot.getPlotItem()
@@ -568,20 +604,23 @@ class MainWindow(QMainWindow):
         if self.last_plot_time_ms is None:
             self.last_plot_time_ms = host_ms
         elapsed_s = (host_ms - self.last_plot_time_ms) / 1000.0
-        self.data_buffers["time"].append(elapsed_s)
-        self.data_buffers["temp"].append(float(payload["temp_c"]))
-        self.data_buffers["humidity"].append(float(payload["humidity_pct"]))
-        self.data_buffers["pressure"].append(float(payload["pressure_hpa"]))
+
+        environment = self.data_buffers["environment"]
+        environment["time"].append(elapsed_s)
+        environment["temp"].append(float(payload["temp_c"]))
+        environment["humidity"].append(float(payload["humidity_pct"]))
+        environment["pressure"].append(float(payload["pressure_hpa"]))
+
         gas_index = int(payload["gas_index"])
         if 0 <= gas_index < len(self.data_buffers["gas"]):
-            self.data_buffers["gas"][gas_index].append(float(payload["gas_kohms"]))
-        heater_temp = self._heater_temp_for_step(int(payload["frame_step"]))
-        self.data_buffers["heater"].append(heater_temp)
+            gas_trace = self.data_buffers["gas"][gas_index]
+            gas_trace["time"].append(elapsed_s)
+            gas_trace["value"].append(float(payload["gas_kohms"]))
 
-        current_len = len(self.data_buffers["time"])
-        for idx, series in enumerate(self.data_buffers["gas"]):
-            while len(series) < current_len:
-                series.append(float("nan"))
+        heater_temp = self._heater_temp_for_step(int(payload["frame_step"]))
+        heater = self.data_buffers["heater"]
+        heater["time"].append(elapsed_s)
+        heater["value"].append(heater_temp)
 
     def _heater_temp_for_step(self, frame_step: int) -> float:
         temp_string = self.profile_state.get("heater_profile_temp_c", "")
@@ -592,17 +631,39 @@ class MainWindow(QMainWindow):
             return temps[frame_step - 1]
         return float("nan")
 
+    def _window_series(self, x_values: List[float], y_values: List[float]) -> Tuple[List[float], List[float]]:
+        if not x_values or not y_values:
+            return [], []
+
+        if self.selected_span_seconds is None:
+            return x_values, y_values
+
+        threshold = x_values[-1] - self.selected_span_seconds
+        start_index = 0
+        while start_index < len(x_values) and x_values[start_index] < threshold:
+            start_index += 1
+        return x_values[start_index:], y_values[start_index:]
+
     def refresh_plots(self) -> None:
-        if not self.data_buffers["time"]:
+        environment = self.data_buffers["environment"]
+        if not environment["time"]:
             return
 
-        x = list(self.data_buffers["time"])
-        self.temperature_curve.setData(x, list(self.data_buffers["temp"]))
-        self.humidity_curve.setData(x, list(self.data_buffers["humidity"]))
-        self.pressure_curve.setData(x, list(self.data_buffers["pressure"]))
+        env_x, env_temp = self._window_series(environment["time"], environment["temp"])
+        _, env_humidity = self._window_series(environment["time"], environment["humidity"])
+        _, env_pressure = self._window_series(environment["time"], environment["pressure"])
+        self.temperature_curve.setData(env_x, env_temp)
+        self.humidity_curve.setData(env_x, env_humidity)
+        self.pressure_curve.setData(env_x, env_pressure)
+
         for idx, curve in enumerate(self.gas_curves):
-            curve.setData(x, list(self.data_buffers["gas"][idx]))
-        self.heater_curve.setData(x, list(self.data_buffers["heater"]))
+            gas_trace = self.data_buffers["gas"][idx]
+            gas_x, gas_y = self._window_series(gas_trace["time"], gas_trace["value"])
+            curve.setData(gas_x, gas_y)
+
+        heater = self.data_buffers["heater"]
+        heater_x, heater_y = self._window_series(heater["time"], heater["value"])
+        self.heater_curve.setData(heater_x, heater_y)
 
     def _write_csv_header(self) -> None:
         assert self.csv_file is not None
