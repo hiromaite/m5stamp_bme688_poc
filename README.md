@@ -1,42 +1,43 @@
-# M5StampS3 BME688 H2S Benchmark
+# M5StampS3 BME688 H2S ベンチマーク
 
-This repository contains an `M5StampS3` firmware project and a PC-side Python
-application for collecting `BME688` heater-profile data for `H2S`
-benchmarking.
+このリポジトリには、`M5StampS3` 向けのファームウェアと、
+`BME688` のヒータープロファイル応答を収集するための PC 側 Python
+アプリケーションが含まれています。目的は、`H2S` センサとしての
+`BME688` を評価することです。
 
-## Components
+## 構成
 
 - `src/main.cpp`
-  - firmware for `M5StampS3`
+  - `M5StampS3` 向けファームウェア
   - Bosch `BME68x SensorAPI`
   - `parallel mode`
-  - runtime heater-profile control over serial
+  - シリアル経由でのランタイムヒータープロファイル制御
 - `pc_logger/`
-  - Python GUI and CLI logger
-  - live plotting
-  - recording and exposure-segment labeling
-  - heater-profile editing from the GUI
+  - Python GUI / CLI ロガー
+  - ライブプロット
+  - 記録と暴露セグメントのラベリング
+  - GUI からのヒータープロファイル編集
 - `docs/requirements_v1.md`
-  - approved system requirements baseline
+  - 承認済みのシステム要件ベースライン
 
-## Current Baseline
+## 現在のベースライン
 
-The current `main` branch includes:
+現在の `main` ブランチには次の内容が含まれています。
 
-- variable-length heater profiles (`1..10` steps)
-- a GUI with live plots and plot-span switching
-- profile editing and reset controls
-- CSV recording with metadata headers
+- 可変長ヒータープロファイル（`1..10` ステップ）
+- ライブプロットと表示スパン切り替えを備えた GUI
+- プロファイル編集およびリセット操作
+- メタデータヘッダー付き CSV 記録
 
 ## Firmware
 
-Build:
+ビルド:
 
 ```bash
 ~/.platformio/penv/bin/pio run -e m5stack-stamps3
 ```
 
-Upload:
+アップロード:
 
 ```bash
 ~/.platformio/penv/bin/pio run -e m5stack-stamps3 -t upload --upload-port /dev/cu.usbmodem4101
@@ -44,9 +45,9 @@ Upload:
 
 ## PC Logger
 
-See [pc_logger/README.md](pc_logger/README.md).
+詳細は [pc_logger/README.md](pc_logger/README.md) を参照してください。
 
-## Windows Packaging
+## Windows パッケージング
 
-Packaging preparation is tracked in this repository. The current Windows build
-notes live in [docs/windows_build.md](docs/windows_build.md).
+Windows 配布に向けた準備はこのリポジトリ内で進めています。現在の
+Windows ビルドメモは [docs/windows_build.md](docs/windows_build.md) にあります。
