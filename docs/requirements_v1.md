@@ -1,200 +1,193 @@
-# H2S Benchmark System Requirements v1
+# H2S ベンチマークシステム要件 v1
 
-## 1. Purpose
+## 1. 目的
 
-This project evaluates how well a `BME688` can function as an `H2S` sensor when
-connected to an `M5StampS3`.
+本プロジェクトは、`M5StampS3` に接続した `BME688` が `H2S` センサとして
+どの程度機能するかを評価することを目的とする。
 
-The system shall support:
+本システムは、以下を支援するものとする。
 
-- controlled heater-profile-based acquisition on the device side
-- robust data logging on the PC side
-- dataset creation for classification and regression experiments
-- repeatable benchmarking of model performance under controlled conditions
+- デバイス側でのヒータープロファイル制御に基づく計測
+- PC 側での堅牢なデータロギング
+- 分類および回帰実験のためのデータセット作成
+- 管理された条件下での再現可能なモデル性能評価
 
-This specification covers both:
+本仕様は以下の両方を対象とする。
 
-- firmware running on `M5StampS3`
-- PC-side logging and future GUI tooling
+- `M5StampS3` 上で動作するファームウェア
+- PC 側のロガーおよび将来の GUI ツール群
 
-## 2. Current Baseline
+## 2. 現在のベースライン
 
-The following milestones already exist and should be treated as baseline
-references:
+以下のマイルストーンはすでに存在しており、ベースライン参照点として扱う。
 
-- `f5a6e7a`: initial `parallel-mode` firmware PoC
+- `f5a6e7a`: 初期の `parallel-mode` firmware PoC
 - `d7959e3`: Python serial logger PoC
 
-Current firmware characteristics:
+現在の firmware の特性:
 
-- board: `M5StampS3`
-- sensor: `BME688` over I2C
-- firmware library: Bosch `BME68x SensorAPI`
-- active mode: `parallel mode`
-- current profile: Bosch standard 10-step VSC-oriented profile
-- output format: serial CSV rows with one valid data point per step
+- ボード: `M5StampS3`
+- センサ: I2C 接続の `BME688`
+- ファームウェアライブラリ: Bosch `BME68x SensorAPI`
+- 動作モード: `parallel mode`
+- 現在のプロファイル: Bosch 標準の 10-step VSC 指向プロファイル
+- 出力形式: 1 step ごとの有効データを含む serial CSV 行
 
-Current Python PoC characteristics:
+現在の Python PoC の特性:
 
-- serial receive via `pyserial`
-- raw line capture optional
-- parsed CSV persistence
-- simple frame summary based on `frame_id`
+- `pyserial` によるシリアル受信
+- 必要に応じた raw line 保存
+- 解析済み CSV の永続化
+- `frame_id` に基づく簡易フレーム要約
 
-## 3. System Goal
+## 3. システム目標
 
-The final system shall make it possible to:
+最終システムは、以下を可能にするものとする。
 
-1. acquire repeatable multi-step heater-response data from the BME688
-2. label datasets with gas exposure conditions, especially H2S
-3. store and review experiment sessions with metadata
-4. train and evaluate regression and/or classification models outside the device
-5. compare heater profiles, exposure conditions, and model configurations
+1. BME688 から再現性のある multi-step ヒーター応答データを取得すること
+2. 特に H2S を対象としたガス暴露条件でデータセットにラベル付けすること
+3. メタデータ付きで実験セッションを保存し、確認できること
+4. デバイス外で回帰および分類モデルの学習・評価を行えること
+5. ヒータープロファイル、暴露条件、モデル構成を比較できること
 
-## 4. Scope
+## 4. スコープ
 
-### In Scope
+### スコープ内
 
-- firmware for BME688 profile control and data streaming
-- PC logger for capture, storage, and operator monitoring
-- metadata capture needed for supervised learning
-- experiment-session traceability
-- support for benchmarking workflows
+- BME688 のプロファイル制御とデータストリーミングを行う firmware
+- データ取得、保存、オペレーター監視を行う PC ロガー
+- 教師あり学習に必要なメタデータの取得
+- 実験セッションのトレーサビリティ
+- ベンチマークワークフローの支援
 
-### Out of Scope for the Initial Product
+### 初期プロダクトでのスコープ外
 
-- on-device machine learning inference
-- cloud synchronization
-- multi-sensor fusion beyond one BME688 unless later required
-- full laboratory automation of gas exposure hardware
+- デバイス上での機械学習推論
+- クラウド同期
+- 将来要求されない限り、1 個の BME688 を超えるマルチセンサ融合
+- ガス暴露装置の完全なラボ自動化
 
-## 5. Assumed Workflow
+## 5. 想定ワークフロー
 
-1. connect M5StampS3 to PC over USB
-2. connect BME688 to the M5StampS3 over I2C
-3. connect the GUI to the device
-4. observe live plots while firmware streams continuously
-5. start recording only when the operator wants to persist data
-6. start and end labeled exposure segments during the recording
-7. export one CSV file for the recording interval
-8. use the exported file for offline benchmarking and model development
+1. M5StampS3 を USB で PC に接続する
+2. BME688 を I2C で M5StampS3 に接続する
+3. GUI をデバイスへ接続する
+4. firmware が連続ストリームするデータをライブプロットで観察する
+5. オペレーターが保存したいときだけ記録を開始する
+6. 記録中にラベル付き暴露セグメントを開始・終了する
+7. 記録区間について 1 つの CSV を出力する
+8. 出力した CSV をオフラインのベンチマークやモデル開発に使う
 
-## 6. Firmware Requirements
+## 6. Firmware 要件
 
-### 6.1 Mandatory Requirements
+### 6.1 必須要件
 
-- The firmware shall run on `M5StampS3`.
-- The firmware shall communicate with the BME688 over I2C.
-- The firmware shall use Bosch `BME68x SensorAPI`.
-- The firmware shall support `parallel mode`.
-- The firmware shall support a 10-step heater profile.
-- The firmware shall output machine-readable serial data continuously after boot.
-- The firmware shall identify valid measurement rows only.
-- The firmware shall expose step/order information including:
+- firmware は `M5StampS3` 上で動作すること
+- firmware は BME688 と I2C で通信すること
+- firmware は Bosch `BME68x SensorAPI` を使用すること
+- firmware は `parallel mode` をサポートすること
+- firmware は 10-step ヒータープロファイルをサポートすること
+- firmware は起動後に機械可読な serial データを連続出力すること
+- firmware は有効な計測行のみを識別できること
+- firmware は少なくとも以下の step / 順序情報を出力すること
   - `frame_id`
   - `frame_step`
   - `gas_index`
   - `meas_index`
-- The firmware shall output at least:
-  - temperature
-  - humidity
-  - pressure
-  - gas resistance
-  - validity flags
-- The firmware shall provide enough information for the PC to reconstruct one
-  full 10-step cycle.
-- The firmware shall load a default heater profile at startup.
-- The firmware shall allow the active heater profile to be updated during runtime.
-- The firmware shall treat profile updates as volatile only.
-- The firmware shall revert to the default heater profile after a reboot or power
-  cycle.
+- firmware は少なくとも以下を出力すること
+  - 温度
+  - 湿度
+  - 気圧
+  - ガス抵抗
+  - 妥当性フラグ
+- firmware は PC 側が 1 つの 10-step サイクルを再構成できるだけの情報を提供すること
+- firmware は起動時にデフォルトのヒータープロファイルを読み込むこと
+- firmware はランタイム中にアクティブなヒータープロファイルを更新できること
+- firmware はプロファイル更新を揮発性として扱うこと
+- firmware は再起動または電源再投入後にデフォルトプロファイルへ戻ること
 
-### 6.2 Strongly Desired Requirements
+### 6.2 強く望ましい要件
 
-- The firmware should support switching heater profiles without major rewrites.
-- The firmware should support profile metadata output at boot or session start.
-- The firmware should support stable long-duration operation.
-- The firmware should support a future command interface from the PC.
-- The firmware should support explicit session start markers.
+- firmware は大きな書き換えなしでヒータープロファイルを切り替えられること
+- firmware は起動時またはセッション開始時にプロファイルメタデータを出力できること
+- firmware は長時間運転でも安定して動作すること
+- firmware は将来の PC からのコマンドインターフェースを支援できること
+- firmware は明示的なセッション開始マーカーを支援できること
 
-### 6.3 Future Requirements
+### 6.3 将来要件
 
-- selectable profile presets
-- operator-defined custom heater profiles
-- richer command/response control over serial
-- status reporting for sensor faults and communication faults
-- timestamp synchronization strategy with the PC
+- プリセットプロファイル選択
+- オペレーター定義のカスタムヒータープロファイル
+- より豊富な serial コマンド / 応答制御
+- センサ故障や通信故障のステータス出力
+- PC とのタイムスタンプ同期方針
 
-## 7. PC Logger / GUI Requirements
+## 7. PC Logger / GUI 要件
 
-### 7.1 Mandatory Requirements
+### 7.1 必須要件
 
-- The PC application shall receive serial data from the M5StampS3.
-- The PC application shall persist parsed data to disk.
-- The PC application shall preserve raw incoming lines optionally.
-- The PC application shall group rows by profile cycle or equivalent session unit.
-- The PC application shall detect incomplete frames.
-- The PC application shall preserve capture timestamps on the PC side.
-- The PC application shall associate captured rows with session metadata.
-- The GUI shall save received data as log data while it is connected and active.
-- The GUI shall provide `Record` and `Stop` controls.
-- The GUI shall save only the data received during an active recording interval as
-  the exported CSV dataset.
-- The GUI shall allow the operator to choose a serial port from a scanned port list.
-- The GUI shall allow the operator to start a connection to the selected port.
-- The GUI shall receive the current heater profile from the firmware after
-  communication is established.
-- The GUI shall retain the heater profile received from the firmware and use it as
-  the current profile state in the application.
-- The GUI shall provide a settings modal for heater-profile editing.
-- The GUI shall send heater-profile updates to the firmware.
-- The GUI shall disable profile-editing actions while recording is active.
-- The GUI shall support exposure-segment queueing and labeling.
-- The GUI shall apply labels at the exposure-segment level during export.
-- The GUI shall visualize incoming data in real time.
-- The GUI shall provide two graphs:
-  - temperature, pressure, humidity
-  - ten sensor-resistance traces and heater-control temperature
-- The GUI shall support display-span switching with simple controls for:
-  - 10 minutes
-  - 30 minutes
-  - 1 hour
-  - 5 hours
-  - full session
-- The GUI shall support practical graph interaction such as:
-  - pan
-  - zoom
-  - axis-scale changes including logarithmic view where useful
-- The GUI shall allow logarithmic scaling to be configured per axis.
-- The GUI shall be designed with future Windows 11 executable packaging in mind.
+- PC アプリケーションは M5StampS3 から serial データを受信できること
+- PC アプリケーションは解析済みデータをディスクへ保存できること
+- PC アプリケーションは必要に応じて raw line を保存できること
+- PC アプリケーションは行をプロファイルサイクル単位または同等の単位で束ねられること
+- PC アプリケーションは不完全なフレームを検出できること
+- PC アプリケーションは PC 側の受信タイムスタンプを保持できること
+- PC アプリケーションは取得行にセッションメタデータを関連付けられること
+- GUI は接続中かつ動作中に受信したデータをログデータとして扱うこと
+- GUI は `Record` と `Stop` の操作を持つこと
+- GUI は記録区間中に受信したデータのみを CSV データセットとして出力すること
+- GUI はスキャンしたポート一覧からシリアルポートを選択できること
+- GUI は選択したポートへの接続を開始できること
+- GUI は通信確立後に firmware から現在のヒータープロファイルを受信できること
+- GUI は firmware から受信したヒータープロファイルを現在のプロファイル状態として保持し利用できること
+- GUI はヒータープロファイル編集のための設定モーダルを持つこと
+- GUI はヒータープロファイル更新を firmware に送信できること
+- GUI は記録中にプロファイル編集操作を無効化すること
+- GUI は暴露セグメントのキューイングとラベリングを支援すること
+- GUI は出力時に暴露セグメント単位でラベルを適用すること
+- GUI は受信データをリアルタイムに可視化すること
+- GUI は 2 つのグラフを提供すること
+  - 温度・気圧・湿度
+  - 10 本のセンサ抵抗トレースとヒーター制御温度
+- GUI は以下の表示スパン切り替えを簡単に行えること
+  - 10 分
+  - 30 分
+  - 1 時間
+  - 5 時間
+  - 全区間
+- GUI は実用的なグラフ操作を支援すること
+  - パン
+  - ズーム
+  - 必要に応じた対数表示を含む軸スケール変更
+- GUI は軸ごとに対数表示を設定できること
+- GUI は将来の Windows 11 実行ファイル化を考慮した構成であること
 
-### 7.2 Strongly Desired Requirements
+### 7.2 強く望ましい要件
 
-- The application should provide a GUI for session control.
-- The application should display current serial connection status.
-- The application should show incoming data health:
+- アプリケーションはセッション制御用 GUI を提供すること
+- アプリケーションは現在の serial 接続状態を表示すること
+- アプリケーションは入力データの健全性を表示すること
   - frame completeness
-  - valid/invalid counts
-  - dropped or malformed lines
-- The application should visualize step-wise gas response during capture.
-- The application should support operator notes.
-- The GUI should prevent the Windows system from entering idle sleep while the
-  application is actively recording, if the operating system permits it.
-- The GUI should support decimation or thinning for long-duration plotting.
+  - valid / invalid 件数
+  - 落ちた行や malformed line
+- アプリケーションは取得中に step ごとのガス応答を可視化すること
+- アプリケーションはオペレーターのメモを支援すること
+- GUI は、OS が許す限り、記録中に Windows のアイドルスリープを抑止すること
+- GUI は長時間プロット向けに decimation または thinning を支援すること
 
-### 7.3 Future Requirements
+### 7.3 将来要件
 
-- profile selection from GUI
-- live plotting enhancements
-- experiment templates
-- dataset browser
-- training-run linkage and benchmark result review
+- GUI からのプロファイル選択
+- ライブプロットの強化
+- 実験テンプレート
+- データセットブラウザ
+- 学習実行との紐付けおよびベンチマーク結果確認
 
-## 8. Data Requirements
+## 8. データ要件
 
-### 8.1 Per-Row Sensor Data
+### 8.1 行単位センサデータ
 
-The current expected sensor record contains:
+現在想定しているセンサレコードは以下を含む。
 
 - `frame_id`
 - `batch_id`
@@ -210,65 +203,65 @@ The current expected sensor record contains:
 - `status_hex`
 - `gas_valid`
 - `heat_stable`
-- PC receive timestamp
+- PC 側受信タイムスタンプ
 
-### 8.2 Session Metadata
+### 8.2 セッションメタデータ
 
-The system shall be able to store:
+システムは以下を保存できること。
 
-- session identifier
-- operator name or ID
-- datetime started/stopped
-- firmware commit or version
-- heater profile ID and full profile contents
-- sensor ID or hardware identifier
-- board ID or serial port
-- exposure label
-- target gas type
-- target concentration
-- unit of concentration
-- exposure start/end timing
-- ambient conditions if available
-- notes
+- セッション識別子
+- オペレーター名または ID
+- 開始 / 終了日時
+- firmware のコミットまたはバージョン
+- ヒータープロファイル ID とその完全内容
+- センサ ID またはハードウェア識別子
+- ボード ID またはシリアルポート
+- 暴露ラベル
+- 対象ガス種
+- 目標濃度
+- 濃度単位
+- 暴露開始 / 終了タイミング
+- 取得できる場合の周囲環境条件
+- メモ
 
-Session metadata shall be stored in the CSV header.
+セッションメタデータは CSV ヘッダーに格納するものとする。
 
-### 8.3 Dataset-Level Metadata
+### 8.3 データセットレベルメタデータ
 
-- train/validation/test split policy
-- label source and confidence
-- calibration context
-- experiment protocol version
+- train / validation / test 分割方針
+- ラベルソースと信頼度
+- キャリブレーション文脈
+- 実験プロトコルバージョン
 
-## 9. Benchmarking Requirements
+## 9. ベンチマーク要件
 
-The system shall support at least two analysis modes:
+システムは少なくとも以下の 2 種類の解析モードを支援すること。
 
-- classification
-  - examples: H2S present/absent, gas class discrimination
-- regression
-  - example: H2S concentration estimation
+- 分類
+  - 例: H2S の有無判定、ガスクラス識別
+- 回帰
+  - 例: H2S 濃度推定
 
-The recorded data shall be sufficient to derive features from:
+記録データは、少なくとも以下の特徴量を導けるだけの情報を含むこと。
 
-- individual step gas resistance values
-- temporal profile shape
-- derived ratios or deltas between steps
-- temperature/humidity/pressure context
+- 各 step のガス抵抗値
+- 時系列プロファイル形状
+- step 間の比や差分などの派生量
+- 温度 / 湿度 / 気圧の文脈情報
 
-The initial benchmark direction is:
+初期ベンチマーク方針は以下とする。
 
-- classification-first workflow
-- with LoD-oriented evaluation as the practical objective
-- while keeping concentration-regression support in scope from the beginning
+- 分類先行のワークフロー
+- 実務上の目的として LoD 指向の評価を置く
+- ただし初期段階から濃度回帰もスコープ内に含める
 
-The LoD definition basis is:
+LoD の定義基準は以下とする。
 
-- use air-measurement output as baseline
-- use `3 sigma` of the air-output distribution as the threshold basis
-- evaluate at the exposure-segment level
+- air 測定時の出力をベースラインとする
+- air 出力分布の `3 sigma` を閾値基準とする
+- 暴露セグメント単位で評価する
 
-The recommended initial concentration ladder is:
+推奨する初期濃度ラダーは以下とする。
 
 - `0 ppm`
 - `0.25 ppm`
@@ -278,47 +271,47 @@ The recommended initial concentration ladder is:
 - `5 ppm`
 - `10 ppm`
 
-The recommended initial success metrics are:
+推奨する初期成功指標は以下とする。
 
-- classification primary:
+- 分類の主要指標
   - balanced accuracy
   - Matthews correlation coefficient (MCC)
-- classification secondary:
+- 分類の副次指標
   - F1 score
   - AUROC
-- regression:
+- 回帰
   - MAE
   - RMSE
   - R²
 
-The initial practical LoD decision rule is:
+初期の実務的 LoD 判定ルールは以下とする。
 
-- determine an air-derived threshold using `mean_air + 3 sigma_air`
-- evaluate at the exposure-segment level
-- define the initial practical LoD as the lowest concentration rung at which:
-  - at least `95%` of labeled exposure segments exceed the air-derived threshold
-  - and air-vs-H2S segment classification achieves:
+- `mean_air + 3 sigma_air` により air 由来の閾値を決定する
+- 暴露セグメント単位で評価する
+- 以下を満たす最も低い濃度ラダーを初期実務 LoD と定義する
+  - ラベル付き暴露セグメントのうち少なくとも `95%` が air 由来閾値を超える
+  - かつ air-vs-H2S のセグメント分類が以下を満たす
     - balanced accuracy `>= 0.80`
     - MCC `>= 0.60`
 
-## 10. Recommended Architecture Direction
+## 10. 推奨アーキテクチャ方針
 
 ### Firmware
 
-- continue using Bosch `BME68x SensorAPI`
-- keep serial CSV as the default streaming transport
-- extend with simple text command handling for profile control
+- Bosch `BME68x SensorAPI` を継続利用する
+- デフォルトのストリーミング転送は serial CSV とする
+- プロファイル制御のために単純なテキストコマンド処理を拡張する
 
-### PC Application
+### PC アプリケーション
 
-Recommended phased approach:
+推奨する段階的アプローチ:
 
 1. logger CLI PoC
 2. logger core library
 3. simple GUI shell
 4. richer experiment-management GUI
 
-Recommended initial technical stack:
+推奨する初期技術スタック:
 
 - Python `3.9+`
 - `venv`
@@ -326,69 +319,69 @@ Recommended initial technical stack:
 - `PySide6`
 - `pyqtgraph`
 
-Deployment direction:
+デプロイ方針:
 
-- design the GUI so that it can be packaged for Windows 11
-- prefer `pyside6-deploy` compatible project structure from the beginning
-- keep `PyInstaller` as a fallback option if needed for tooling reasons
+- GUI は Windows 11 向けにパッケージ化できる構成で設計する
+- 初期段階から `pyside6-deploy` と相性の良い project structure を優先する
+- ツール都合がある場合に限り `PyInstaller` を fallback として保持する
 
-Windows power-management direction:
+Windows 電源管理方針:
 
-- use the Win32 `SetThreadExecutionState` API as best-effort sleep suppression
-  during active recording
+- 記録中の best-effort なスリープ抑止として Win32 `SetThreadExecutionState`
+  API を使用する
 
-## 11. Approved Design Decisions
+## 11. 承認済み設計判断
 
-- Heater-control main path: `parallel mode`
-- Sensor API main path: Bosch `BME68x SensorAPI`
-- Initial profile: Bosch standard 10-step profile
-- PC-side development inside this repository: yes
-- Python environment isolation with local `venv`: yes
-- Initial benchmark direction: classification-first with LoD-oriented evaluation
-- Label granularity: exposure-segment based labeling
-- Initial GUI scope: minimal GUI with staged expansion
-- Initial export format: CSV only
-- Metadata placement: CSV header
-- Firmware behavior: continuous streaming after boot
-- Profile behavior:
-  - one default profile loaded on boot
-  - GUI-driven profile update supported
-  - updated profile is temporary and does not survive a power cycle
-- Plotting behavior:
-  - ten resistance traces are always overlaid
-  - heater temperature uses a secondary axis
-  - temperature and humidity share one axis
-  - pressure uses a separate axis
-  - logarithmic scaling is configurable per axis
-  - long-session plot decimation is desirable
+- ヒーター制御の主経路: `parallel mode`
+- センサ API の主経路: Bosch `BME68x SensorAPI`
+- 初期プロファイル: Bosch 標準 10-step プロファイル
+- PC 側開発をこのリポジトリ内で行う: yes
+- Python 環境をローカル `venv` で分離する: yes
+- 初期ベンチマーク方針: classification-first with LoD-oriented evaluation
+- ラベル粒度: exposure-segment based labeling
+- 初期 GUI スコープ: minimal GUI with staged expansion
+- 初期出力形式: CSV only
+- メタデータ格納位置: CSV header
+- firmware 動作: continuous streaming after boot
+- プロファイル動作:
+  - 起動時に 1 つのデフォルトプロファイルを読み込む
+  - GUI 駆動のプロファイル更新を支援する
+  - 更新済みプロファイルは一時的であり、電源再投入では保持されない
+- プロット動作:
+  - 10 本の抵抗トレースを常時重ねる
+  - ヒーター温度は第 2 軸を用いる
+  - 温度と湿度は同一軸
+  - 気圧は別軸
+  - 軸ごとに対数表示を設定できる
+  - 長時間セッション向けのプロット decimation は望ましい
 
-## 12. Approved GUI Operation Flow
+## 12. 承認済み GUI 操作フロー
 
-Recommended and approved interaction flow:
+推奨かつ承認済みの操作フローは以下とする。
 
-1. `Scan` serial ports
-2. `Connect` to the selected port
-3. receive the active profile from firmware
-4. update live plots continuously
-5. prepare or queue the next exposure-segment label
-6. press `Record` to begin data persistence
-7. press `Start Segment` to begin the labeled exposure segment
-8. press `End Segment` to close the labeled exposure segment
-9. press `Stop` to stop recording and finalize CSV export
+1. serial ポートを `Scan`
+2. 選択したポートに `Connect`
+3. firmware からアクティブなプロファイルを受信
+4. ライブプロットを継続更新
+5. 次の暴露セグメント用ラベルを準備またはキューイング
+6. `Record` を押してデータ保存開始
+7. `Start Segment` を押してラベル付き暴露セグメント開始
+8. `End Segment` を押してラベル付き暴露セグメント終了
+9. `Stop` を押して記録終了および CSV 出力確定
 
-This separates:
+これにより以下を分離する。
 
-- continuous observation
-- explicit recording
-- explicit exposure labeling
+- 常時観察
+- 明示的な記録
+- 明示的な暴露ラベリング
 
-## 13. Approved Serial Protocol Direction
+## 13. 承認済み Serial Protocol 方針
 
 ### 13.1 Device to PC
 
-The firmware shall continuously output text lines.
+firmware はテキスト行を連続出力するものとする。
 
-Line families:
+行ファミリ:
 
 - `[csv] ...`
 - `[profile] key=value`
@@ -397,31 +390,30 @@ Line families:
 
 ### 13.2 PC to Device
 
-The GUI shall send one command per line.
+GUI は 1 行につき 1 コマンドを送信するものとする。
 
-Initial command set:
+初期コマンドセット:
 
 - `GET_PROFILE`
 - `SET_PROFILE temp=... dur=... base_ms=...`
 - `RESET_PROFILE`
 - `PING`
 
-### 13.3 Protocol Rules
+### 13.3 プロトコル規則
 
-- CSV streaming remains active by default.
-- Profile update commands are not sent while recording is active.
-- Firmware responds to control commands with short `[event]`, `[status]`, or
-  `[profile]` lines.
+- CSV ストリーミングはデフォルトで継続する
+- 記録中はプロファイル更新コマンドを送信しない
+- firmware は制御コマンドに対して短い `[event]`, `[status]`, `[profile]` 行で応答する
 
-## 14. Approved CSV Metadata Header Format
+## 14. 承認済み CSV メタデータヘッダー形式
 
-The CSV file shall use:
+CSV ファイルは以下の形式を用いるものとする。
 
-- comment-prefixed metadata lines beginning with `# `
-- `key=value` syntax for metadata
-- a normal CSV table header at the first non-comment line
+- `# ` で始まるコメント付きメタデータ行
+- メタデータは `key=value` 構文
+- 最初の非コメント行に通常の CSV ヘッダーを置く
 
-Recommended file structure:
+推奨ファイル構造:
 
 ```text
 # file_format=h2s_benchmark_csv_v1
@@ -450,7 +442,7 @@ frame_id,batch_id,frame_step,host_ms,field_index,gas_index,meas_index,temp_c,hum
 ...
 ```
 
-Mandatory CSV metadata keys:
+必須 CSV メタデータキー:
 
 - `file_format`
 - `exported_at_iso`
@@ -469,7 +461,7 @@ Mandatory CSV metadata keys:
 - `label_unit`
 - `label_scope`
 
-Strongly desired metadata keys:
+強く望ましいメタデータキー:
 
 - `recording_id`
 - `sensor_id`
@@ -477,15 +469,13 @@ Strongly desired metadata keys:
 - `lod_rule`
 - `notes`
 
-## 15. Remaining Implementation Details
+## 15. 残っている実装詳細
 
-The following items remain open at implementation-detail level, but do not
-block this v1 specification:
+以下の項目は実装詳細レベルでは未確定だが、この v1 仕様を妨げるものではない。
 
-- exact concentration ladder may be refined after early exposure experiments
-- final acceptance thresholds may be tuned after pilot data analysis
-- exact GUI widget layout details
-- whether individual resistance traces can be toggled on or off
-- whether plot decimation is automatic only or also user-configurable
-- exact serial parsing and error-recovery behavior
-
+- 濃度ラダーの詳細値は初期暴露実験後に調整される可能性がある
+- 最終受け入れ閾値は pilot data analysis 後に調整される可能性がある
+- GUI ウィジェット配置の最終詳細
+- 個別抵抗トレースを ON / OFF 切り替え可能にするかどうか
+- プロット decimation を自動のみとするか、ユーザー設定可能にするか
+- serial parsing と error recovery の厳密な挙動
