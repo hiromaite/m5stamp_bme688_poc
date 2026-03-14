@@ -180,6 +180,7 @@ class MainWindow(QMainWindow):
             "gas": [deque(maxlen=5000) for _ in range(10)],
         }
         self.last_plot_time_ms = None
+        self.last_pong_iso = ""
 
         self._build_ui()
         self._setup_plots()
@@ -213,7 +214,9 @@ class MainWindow(QMainWindow):
         self.end_segment_button.setEnabled(False)
 
         self.profile_button = QPushButton("Profile Settings")
+        self.reset_profile_button = QPushButton("Reset Profile")
         self.profile_button.setEnabled(False)
+        self.reset_profile_button.setEnabled(False)
 
         self.label_edit = QLineEdit("air_baseline")
         self.target_ppm_edit = QLineEdit("0")
@@ -240,6 +243,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.start_segment_button, 2, 2)
         controls_layout.addWidget(self.end_segment_button, 2, 3)
         controls_layout.addWidget(self.profile_button, 2, 4)
+        controls_layout.addWidget(self.reset_profile_button, 2, 5)
 
         controls_layout.addWidget(self.status_label, 3, 0, 1, 3)
         controls_layout.addWidget(self.profile_label, 3, 3, 1, 3)
@@ -315,6 +319,7 @@ class MainWindow(QMainWindow):
         self.start_segment_button.clicked.connect(self.start_segment)
         self.end_segment_button.clicked.connect(self.end_segment)
         self.profile_button.clicked.connect(self.open_profile_dialog)
+        self.reset_profile_button.clicked.connect(self.reset_profile)
 
     def _sync_environment_axes(self) -> None:
         env_plot_item = self.environment_plot.getPlotItem()
@@ -362,15 +367,18 @@ class MainWindow(QMainWindow):
     def handle_connection_changed(self, connected: bool, port: str) -> None:
         self.is_connected = connected
         self.connect_button.setEnabled(not connected)
+        self.scan_button.setEnabled(not connected)
+        self.port_combo.setEnabled(not connected)
         self.disconnect_button.setEnabled(connected)
         self.record_button.setEnabled(connected and not self.is_recording)
         self.start_segment_button.setEnabled(connected and self.is_recording and self.current_segment is None)
         self.end_segment_button.setEnabled(connected and self.is_recording and self.current_segment is not None)
         self.profile_button.setEnabled(connected and not self.is_recording)
+        self.reset_profile_button.setEnabled(connected and not self.is_recording)
         self.status_label.setText(f"Connected: {port}" if connected else "Disconnected")
         if connected and self.worker:
-            self.worker.send_command("GET_PROFILE")
-            self.worker.send_command("PING")
+            self.send_command("GET_PROFILE")
+            self.send_command("PING")
         self.log(f"{'Connected' if connected else 'Disconnected'} {port}")
 
     def handle_serial_error(self, message: str) -> None:
@@ -410,6 +418,7 @@ class MainWindow(QMainWindow):
         self.start_segment_button.setEnabled(False)
         self.end_segment_button.setEnabled(False)
         self.profile_button.setEnabled(self.is_connected)
+        self.reset_profile_button.setEnabled(self.is_connected)
         self._set_sleep_prevention(False)
 
         if self.csv_file:
@@ -453,14 +462,69 @@ class MainWindow(QMainWindow):
 
         self.profile_state.update(dialog.profile_state())
         self.update_profile_label()
-        if self.worker:
-            self.worker.send_command(dialog.profile_command())
+        self.send_command(dialog.profile_command())
         self.log("Profile update command sent")
+
+    def reset_profile(self) -> None:
+        self.send_command("RESET_PROFILE")
+        self.log("Profile reset command sent")
+
+    def send_command(self, command: str) -> None:
+        if not self.worker:
+            self.log(f"Command skipped while disconnected: {command}")
+            return
+        self.worker.send_command(command)
 
     def update_profile_label(self) -> None:
         profile_id = self.profile_state.get("heater_profile_id", "unknown")
         temp = self.profile_state.get("heater_profile_temp_c", "")
-        self.profile_label.setText(f"Profile: {profile_id} | temp={temp}")
+        base_ms = self.profile_state.get("heater_profile_time_base_ms", "")
+        self.profile_label.setText(f"Profile: {profile_id} | base_ms={base_ms} | temp={temp}")
+
+    def _handle_status_line(self, payload: Dict[str, str], raw_line: str) -> None:
+        if "pong" in payload:
+            self.last_pong_iso = datetime.now().isoformat(timespec="seconds")
+            self.log(f"Device ping OK at {self.last_pong_iso}")
+            return
+
+        if payload.get("set_profile") == "ok":
+            self.log("Profile update accepted by firmware")
+            self.send_command("GET_PROFILE")
+            return
+
+        if payload.get("set_profile") == "failed":
+            self.log("Profile update rejected by firmware")
+            return
+
+        if "command_error" in payload:
+            self.log(f"Firmware command error: {payload['command_error']}")
+            return
+
+        if "apply_profile_error" in payload:
+            self.log(f"Firmware profile apply error: {payload['apply_profile_error']}")
+            return
+
+        if "profile_validation" in payload:
+            self.log(f"Firmware profile validation: {payload['profile_validation']}")
+            return
+
+        self.log(raw_line)
+
+    def _handle_event_line(self, payload: Dict[str, str], raw_line: str) -> None:
+        if "command_received" in payload:
+            self.log(f"Firmware accepted command: {payload['command_received']}")
+            return
+
+        if payload.get("profile_updated") == "1":
+            self.log("Firmware switched to runtime custom profile")
+            return
+
+        if payload.get("profile_reset") == "1":
+            self.log("Firmware restored the default profile")
+            self.send_command("GET_PROFILE")
+            return
+
+        self.log(raw_line)
 
     def handle_serial_line(self, line: str) -> None:
         parsed = parse_serial_line(line)
@@ -473,8 +537,12 @@ class MainWindow(QMainWindow):
             self.log(f"Profile update: {parsed.raw_line}")
             return
 
-        if parsed.line_type in {"status", "event"}:
-            self.log(parsed.raw_line)
+        if parsed.line_type == "status":
+            self._handle_status_line(parsed.payload, parsed.raw_line)
+            return
+
+        if parsed.line_type == "event":
+            self._handle_event_line(parsed.payload, parsed.raw_line)
             return
 
         if parsed.line_type != "csv":
