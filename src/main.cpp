@@ -11,6 +11,7 @@ constexpr uint8_t kBme68xPrimaryAddress = BME68X_I2C_ADDR_LOW;
 constexpr uint8_t kBme68xSecondaryAddress = BME68X_I2C_ADDR_HIGH;
 constexpr int8_t kAmbientTemperatureC = 25;
 constexpr uint8_t kProfileLength = 10;
+constexpr uint8_t kMinProfileLength = 1;
 constexpr uint16_t kDefaultProfileTimeBaseMs = 140;
 constexpr uint8_t kMaxFieldsPerRead = 3;
 constexpr uint8_t kValidDataMask = 0xB0;
@@ -27,6 +28,7 @@ struct bme68x_heatr_conf heaterConf = {};
 uint16_t runtimeHeaterTempProfile[kProfileLength] = {};
 uint16_t runtimeHeaterDurationMultipliers[kProfileLength] = {};
 uint16_t profileTimeBaseMs = kDefaultProfileTimeBaseMs;
+uint8_t currentProfileLength = kProfileLength;
 
 unsigned long bootCount = 0;
 bool sensorReady = false;
@@ -163,7 +165,7 @@ void printEventKeyValue(const char *key, int value) {
 
 void printArrayProfileLine(const char *key, const uint16_t *values) {
   Serial.printf("[profile] %s=", key);
-  for (uint8_t i = 0; i < kProfileLength; ++i) {
+  for (uint8_t i = 0; i < currentProfileLength; ++i) {
     if (i > 0) {
       Serial.print(",");
     }
@@ -178,6 +180,7 @@ void copyDefaultProfile() {
     runtimeHeaterDurationMultipliers[i] = kDefaultHeaterDurationMultipliers[i];
   }
   profileTimeBaseMs = kDefaultProfileTimeBaseMs;
+  currentProfileLength = kProfileLength;
   runtimeProfileActive = false;
 }
 
@@ -190,16 +193,16 @@ void printCurrentProfileDetails() {
   printArrayProfileLine("heater_profile_temp_c", runtimeHeaterTempProfile);
   printArrayProfileLine("heater_profile_duration_mult", runtimeHeaterDurationMultipliers);
   Serial.printf("[profile] heater_profile_time_base_ms=%u\n", profileTimeBaseMs);
-  Serial.printf("[profile] profile_len=%u\n", kProfileLength);
+  Serial.printf("[profile] profile_len=%u\n", currentProfileLength);
   Serial.printf("[profile] poll_interval_ms=%.2f\n", profilePollIntervalUs / 1000.0f);
 }
 
 void printProfileSummary() {
   Serial.printf("[profile] description=%s\n", runtimeProfileActive ? "runtime custom profile" : "Bosch standard VSC-oriented parallel-mode profile");
   Serial.printf("[profile] time_base_ms=%u\n", profileTimeBaseMs);
-  Serial.printf("[profile] profile_len=%u\n", kProfileLength);
+  Serial.printf("[profile] profile_len=%u\n", currentProfileLength);
   Serial.printf("[profile] poll_interval_ms=%.2f\n", profilePollIntervalUs / 1000.0f);
-  for (uint8_t i = 0; i < kProfileLength; ++i) {
+  for (uint8_t i = 0; i < currentProfileLength; ++i) {
     Serial.printf("[profile] step_%u=temp:%u,duration_ms:%u\n",
                   i,
                   runtimeHeaterTempProfile[i],
@@ -222,7 +225,7 @@ bool applyCurrentProfile() {
   heaterConf.heatr_dur = 0;
   heaterConf.heatr_temp_prof = runtimeHeaterTempProfile;
   heaterConf.heatr_dur_prof = runtimeHeaterDurationMultipliers;
-  heaterConf.profile_len = kProfileLength;
+  heaterConf.profile_len = currentProfileLength;
 
   const uint32_t measurementDurationUs = bme68x_get_meas_dur(BME68X_PARALLEL_MODE, &sensorConf, &bme);
   const uint32_t measurementDurationMs = measurementDurationUs / 1000;
@@ -307,9 +310,10 @@ bool initializeBme688() {
   return true;
 }
 
-bool parseUint16List(const String &input, uint16_t *output) {
+bool parseUint16List(const String &input, uint16_t *output, uint8_t &parsedLength) {
   int start = 0;
-  for (uint8_t index = 0; index < kProfileLength; ++index) {
+  parsedLength = 0;
+  while (start <= input.length()) {
     const int comma = input.indexOf(',', start);
     String token;
     if (comma == -1) {
@@ -326,28 +330,32 @@ bool parseUint16List(const String &input, uint16_t *output) {
     if (parsed < 0 || parsed > 65535) {
       return false;
     }
-    output[index] = static_cast<uint16_t>(parsed);
+    if (parsedLength >= kProfileLength) {
+      return false;
+    }
+    output[parsedLength++] = static_cast<uint16_t>(parsed);
 
     if (comma == -1) {
-      if (index != kProfileLength - 1) {
-        return false;
-      }
-      start = input.length();
-    } else {
-      start = comma + 1;
+      break;
     }
+    start = comma + 1;
   }
 
-  return input.indexOf(',', start) == -1;
+  return parsedLength >= kMinProfileLength;
 }
 
-bool validateProfileValues(const uint16_t *temps, const uint16_t *durations, uint16_t timeBaseMs) {
+bool validateProfileValues(const uint16_t *temps, const uint16_t *durations, uint16_t timeBaseMs, uint8_t profileLength) {
   if (timeBaseMs == 0 || timeBaseMs > 1000) {
     printStatusKeyValue("profile_validation", "invalid_time_base");
     return false;
   }
 
-  for (uint8_t i = 0; i < kProfileLength; ++i) {
+  if (profileLength < kMinProfileLength || profileLength > kProfileLength) {
+    printStatusKeyValue("profile_validation", "invalid_profile_length");
+    return false;
+  }
+
+  for (uint8_t i = 0; i < profileLength; ++i) {
     if (temps[i] > 400) {
       Serial.printf("[status] profile_validation=temp_out_of_range:%u:%u\n", i, temps[i]);
       return false;
@@ -379,8 +387,16 @@ bool handleSetProfileCommand(const String &command) {
 
   uint16_t tempProfile[kProfileLength] = {};
   uint16_t durationProfile[kProfileLength] = {};
-  if (!parseUint16List(tempValue, tempProfile) || !parseUint16List(durValue, durationProfile)) {
+  uint8_t parsedTempLength = 0;
+  uint8_t parsedDurationLength = 0;
+  if (!parseUint16List(tempValue, tempProfile, parsedTempLength) ||
+      !parseUint16List(durValue, durationProfile, parsedDurationLength)) {
     printStatusKeyValue("command_error", "invalid_profile_list");
+    return false;
+  }
+
+  if (parsedTempLength != parsedDurationLength) {
+    printStatusKeyValue("command_error", "profile_length_mismatch");
     return false;
   }
 
@@ -390,15 +406,21 @@ bool handleSetProfileCommand(const String &command) {
     return false;
   }
 
-  if (!validateProfileValues(tempProfile, durationProfile, static_cast<uint16_t>(parsedTimeBase))) {
+  if (!validateProfileValues(tempProfile, durationProfile, static_cast<uint16_t>(parsedTimeBase), parsedTempLength)) {
     return false;
   }
 
   for (uint8_t i = 0; i < kProfileLength; ++i) {
-    runtimeHeaterTempProfile[i] = tempProfile[i];
-    runtimeHeaterDurationMultipliers[i] = durationProfile[i];
+    if (i < parsedTempLength) {
+      runtimeHeaterTempProfile[i] = tempProfile[i];
+      runtimeHeaterDurationMultipliers[i] = durationProfile[i];
+    } else {
+      runtimeHeaterTempProfile[i] = 0;
+      runtimeHeaterDurationMultipliers[i] = 0;
+    }
   }
   profileTimeBaseMs = static_cast<uint16_t>(parsedTimeBase);
+  currentProfileLength = parsedTempLength;
   runtimeProfileActive = true;
 
   if (!applyCurrentProfile()) {
@@ -536,7 +558,7 @@ void startNewFrame(uint8_t gasIndex) {
     frameSynced = true;
     frameCounter = 1;
   } else {
-    if (frameStepCount != kProfileLength) {
+    if (frameStepCount != currentProfileLength) {
       Serial.printf("[frame] id=%lu incomplete step_count=%u\n",
                     static_cast<unsigned long>(frameCounter),
                     frameStepCount);
@@ -552,7 +574,7 @@ void startNewFrame(uint8_t gasIndex) {
 }
 
 void finishFrameIfComplete() {
-  if (frameSynced && frameStepCount == kProfileLength) {
+  if (frameSynced && frameStepCount == currentProfileLength) {
     Serial.printf("[frame] id=%lu complete step_count=%u\n",
                   static_cast<unsigned long>(frameCounter),
                   frameStepCount);
