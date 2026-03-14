@@ -1,4 +1,4 @@
-# Python Logger PoC
+# PC Logger
 
 This directory contains the PC-side tooling for the M5StampS3 BME688
 parallel-mode workflow.
@@ -6,8 +6,12 @@ parallel-mode workflow.
 ## Layout
 
 - `src/serial_logger.py`: serial receiver and CSV logger CLI PoC
-- `src/gui_app.py`: minimal GUI shell
+- `main.py`: packaging-friendly GUI entry point
+- `src/gui_app.py`: GUI implementation
+- `src/app_metadata.py`: app name and version constants
 - `src/serial_protocol.py`: shared serial parsing helpers
+- `pc_logger.pyproject`: Qt project description
+- `pysidedeploy.spec`: Qt deployment config
 - `requirements.txt`: Python dependencies
 - `data/`: default output directory for captured logs
 
@@ -32,7 +36,7 @@ python src/serial_logger.py --port /dev/cu.usbmodem4101
 ```bash
 cd pc_logger
 source .venv/bin/activate
-python src/gui_app.py
+python main.py
 ```
 
 Useful options for the CLI logger:
@@ -48,9 +52,11 @@ The GUI currently provides:
 - record/stop controls
 - start/end exposure segment controls
 - current heater profile display
-- profile settings modal shell
+- variable-length heater-profile editing (`1..10` steps)
+- profile reset control
 - live environmental plot
 - live gas-resistance plus heater-temperature plot
+- plot-span switching
 
 The CLI logger by default:
 
@@ -78,3 +84,18 @@ The GUI currently understands these line families:
 - `[profile] key=value`
 - `[status] key=value`
 - `[event] key=value`
+
+## Packaging Direction
+
+The current packaging target is Windows 11.
+
+Primary deployment path:
+
+- `pyside6-deploy`
+- `standalone` mode first
+
+Fallback path:
+
+- `PyInstaller`
+
+See [../docs/windows_build.md](../docs/windows_build.md) for the current Windows build notes.
