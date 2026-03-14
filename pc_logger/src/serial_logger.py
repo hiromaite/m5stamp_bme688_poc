@@ -4,31 +4,12 @@ import argparse
 import csv
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import serial
 
-
-CSV_PREFIX = "[csv] "
-EXPECTED_COLUMNS = [
-    "frame_id",
-    "batch_id",
-    "frame_step",
-    "host_ms",
-    "field_index",
-    "gas_index",
-    "meas_index",
-    "temp_c",
-    "humidity_pct",
-    "pressure_hpa",
-    "gas_kohms",
-    "status_hex",
-    "gas_valid",
-    "heat_stable",
-]
-OUTPUT_COLUMNS = ["received_at_iso", *EXPECTED_COLUMNS, "source_line"]
+from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 
 
 @dataclass
@@ -75,19 +56,14 @@ def parse_args() -> LoggerConfig:
 
 
 def default_output_path() -> Path:
+    from datetime import datetime
+
     timestamp = datetime.now().strftime("session_%Y%m%d_%H%M%S.csv")
     return Path("data") / timestamp
 
 
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def parse_csv_payload(payload: str) -> Optional[Dict[str, str]]:
-    values = [part.strip() for part in payload.split(",")]
-    if len(values) != len(EXPECTED_COLUMNS):
-        return None
-    return dict(zip(EXPECTED_COLUMNS, values))
 
 
 def print_startup(config: LoggerConfig) -> None:
@@ -139,20 +115,12 @@ def run_logger(config: LoggerConfig) -> None:
                     raw_file.write(line + "\n")
                     raw_file.flush()
 
-                if not line.startswith(CSV_PREFIX):
+                parsed_line = parse_serial_line(line)
+                if parsed_line is None or parsed_line.line_type != "csv":
                     continue
 
-                payload = line[len(CSV_PREFIX) :]
-                parsed = parse_csv_payload(payload)
-                if parsed is None:
-                    print(f"Skipping malformed CSV line: {line}")
-                    continue
-
-                row = {
-                    "received_at_iso": datetime.now().isoformat(timespec="milliseconds"),
-                    **parsed,
-                    "source_line": line,
-                }
+                parsed = parsed_line.payload
+                row = enrich_csv_row(parsed, line)
                 writer.writerow(row)
                 csv_file.flush()
 
