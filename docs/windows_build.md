@@ -1,42 +1,43 @@
-# Windows Build Notes
+# Windows ビルドメモ
 
-This document describes the current plan for producing a Windows executable for
-the PC logger GUI.
+この文書は、PC ロガー GUI の Windows 実行ファイルを生成するための
+現在の方針をまとめたものです。
 
-## Packaging Strategy
+## パッケージング方針
 
-Primary path:
+主経路:
 
 - `pyside6-deploy`
-- deploy mode: `standalone` first
+- deploy mode はまず `standalone`
 
-Fallback path:
+fallback:
 
 - `PyInstaller`
 
-The project currently uses `PySide6` and `pyqtgraph`, so the first packaging
-attempt should follow the official Qt for Python deployment flow.
+本プロジェクトは `PySide6` と `pyqtgraph` を利用しているため、最初の
+パッケージング試行は Qt for Python の公式デプロイフローに従うことを
+推奨します。
 
-## Expected Windows Build Environment
+## 想定する Windows ビルド環境
 
 - `Windows 11`
 - Python `3.12`
-- a fresh virtual environment inside `pc_logger/.venv`
-- Visual Studio Build Tools or a Visual Studio installation with MSVC tools
-- `dumpbin` available in `PATH`
+- `pc_logger/.venv` に作成した新しい仮想環境
+- Visual Studio Build Tools または MSVC ツールを含む Visual Studio
+- `PATH` 上で利用可能な `dumpbin`
 
-## Project Files Prepared For Packaging
+## パッケージング用に準備したプロジェクトファイル
 
 - `pc_logger/main.py`
-  - GUI entry point for packaging
+  - packaging 用 GUI エントリポイント
 - `pc_logger/pc_logger.pyproject`
-  - Qt project description
+  - Qt project 記述
 - `pc_logger/pysidedeploy.spec`
-  - deployment configuration generated or maintained for `pyside6-deploy`
+  - `pyside6-deploy` 用に生成または管理する deployment 設定
 
-## First Packaging Attempt
+## 最初のパッケージング試行
 
-From `pc_logger/` on Windows:
+Windows 上で `pc_logger/` に移動して実行します。
 
 ```bash
 python -m venv .venv
@@ -45,21 +46,20 @@ pip install -r requirements.txt
 pyside6-deploy -c pysidedeploy.spec -f --mode standalone
 ```
 
-## Windows Smoke Test Checklist
+## Windows スモークテスト項目
 
-- application starts without Python installed globally
-- serial ports are listed
-- the device connects successfully
-- live plots update
-- `Record` / `Stop` works
-- `Start Segment` / `End Segment` works
-- profile update works with a 3-step profile
-- profile reset restores the default profile
-- CSV output is written successfully
+- Python をグローバルに入れていない状態でもアプリケーションが起動する
+- serial ポートが列挙される
+- デバイスへ正常に接続できる
+- ライブプロットが更新される
+- `Record` / `Stop` が動作する
+- `Start Segment` / `End Segment` が動作する
+- 3-step プロファイル更新が動作する
+- profile reset でデフォルトプロファイルへ戻る
+- CSV 出力が正常に保存される
 
-## Open Questions
+## 未確定事項
 
-- whether `standalone` output is sufficient for distribution or whether a
-  single-file format is required later
-- whether an application icon should be added before `v01.00`
-- whether a Windows code-signing step is required in the release process
+- 配布物として `standalone` 出力で十分か、将来的に single-file 形式が必要か
+- `v01.00` 前にアプリアイコンを追加するか
+- リリース工程で Windows のコード署名が必要か
