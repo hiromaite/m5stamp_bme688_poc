@@ -1,0 +1,9 @@
+{
+    "files": [
+        "main.py",
+        "src/app_metadata.py",
+        "src/gui_app.py",
+        "src/serial_logger.py",
+        "src/serial_protocol.py"
+    ]
+}

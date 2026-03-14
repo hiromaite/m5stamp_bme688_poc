@@ -10,3 +10,9 @@ __pycache__
 */__pycache__
 pc_logger/data/*.csv
 pc_logger/data/*.log
+pc_logger/build
+pc_logger/dist
+pc_logger/deployment
+pc_logger/*.exe
+pc_logger/*.app
+pc_logger/*.bin
