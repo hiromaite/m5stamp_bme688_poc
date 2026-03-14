@@ -47,6 +47,16 @@
 
 詳細は [pc_logger/README.md](pc_logger/README.md) を参照してください。
 
+Python 環境を構築できる場合は、以下の手順で GUI を起動できます。
+
+```bash
+cd pc_logger
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
 ## Windows パッケージング
 
 Windows 配布に向けた準備はこのリポジトリ内で進めています。現在の
