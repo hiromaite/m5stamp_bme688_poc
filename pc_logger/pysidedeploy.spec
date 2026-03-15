@@ -16,12 +16,12 @@ exec_directory = build
 project_file = pc_logger.pyproject
 
 # application icon
-icon = 
+icon = C:\Users\hiroma-ito.NGKNTK\AppData\Local\Programs\Python\Python313\Lib\site-packages\PySide6\scripts\deploy_lib\pyside_icon.ico
 
 [python]
 
 # python path
-python_path = /Users/hiromasa/Documents/PlatformIO/Projects/m5stamp_bme688_poc/pc_logger/.venv/bin/python3.12
+python_path = C:\Users\hiroma-ito.NGKNTK\AppData\Local\Programs\Python\Python313\python.exe
 
 # python packages to install
 packages = Nuitka==2.7.11
@@ -40,7 +40,7 @@ qml_files =
 excluded_qml_plugins = 
 
 # qt modules used. comma separated
-modules = Core,Gui,Widgets
+modules = Core,Widgets
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
@@ -94,3 +94,4 @@ local_libs =
 
 # architecture of deployed platform
 arch = 
+
