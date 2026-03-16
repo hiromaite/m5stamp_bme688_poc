@@ -28,6 +28,8 @@ pip install -r requirements.txt
 pyinstaller --clean main.spec
 ```
 
+ビルド成果物は `dist/bme688_logger.exe` に生成されます。
+
 `main.spec` はリポジトリに含めてあり、以下をすでに反映しています。
 
 - `src` を含む `pathex`
@@ -74,7 +76,7 @@ pyside6-deploy -f --mode standalone main.py
 - profile reset でデフォルトプロファイルへ戻る
 - CSV 出力が正常に保存される
 
-## 未確定事項
+## 既知の保留事項
 
 - onefile 出力の起動速度や安定性が運用上十分か
 - `v01.00` 前にアプリアイコンを追加するか
