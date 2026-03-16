@@ -55,6 +55,10 @@ MAX_PLOT_POINTS_MEDIUM = 1200
 MAX_PLOT_POINTS_LONG = 800
 CSV_FLUSH_INTERVAL_SECONDS = 5.0
 CSV_FLUSH_ROW_THRESHOLD = 25
+TIME_AXIS_MODES: List[Tuple[str, str]] = [
+    ("Relative", "relative"),
+    ("Clock", "clock"),
+]
 
 
 def configure_qt_runtime() -> None:
@@ -92,6 +96,29 @@ class SegmentState:
     target_ppm: str
     start_iso: str
     end_iso: str = ""
+
+
+class TimeAxisItem(pg.AxisItem):
+    def __init__(self, orientation: str = "bottom") -> None:
+        super().__init__(orientation=orientation)
+        self.mode = "relative"
+
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+
+    def tickStrings(self, values, scale, spacing):  # type: ignore[override]
+        labels = []
+        for value in values:
+            if self.mode == "clock":
+                labels.append(datetime.fromtimestamp(value).strftime("%H:%M:%S"))
+                continue
+
+            sign = "-" if value < 0 else ""
+            total_seconds = max(0, int(round(abs(value))))
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            labels.append(f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}")
+        return labels
 
 
 class SerialWorker(QThread):
@@ -301,19 +328,22 @@ class MainWindow(QMainWindow):
         self.data_buffers = {
             "environment": {
                 "time": [],
+                "wall_time": [],
                 "temp": [],
                 "humidity": [],
                 "pressure": [],
             },
             "heater": {
                 "time": [],
+                "wall_time": [],
                 "value": [],
             },
-            "gas": [{"time": [], "value": []} for _ in range(10)],
+            "gas": [{"time": [], "wall_time": [], "value": []} for _ in range(10)],
         }
         self.last_plot_time_ms = None
         self.last_pong_iso = ""
         self.selected_span_seconds: Optional[float] = None
+        self.time_axis_mode = "relative"
         self.last_selected_port = ""
 
         self._build_ui()
@@ -327,10 +357,16 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         central = QWidget()
-        root = QVBoxLayout(central)
+        root = QHBoxLayout(central)
+        root.setSpacing(12)
+        left_column = QVBoxLayout()
+        left_column.setSpacing(12)
+        right_column = QVBoxLayout()
+        right_column.setSpacing(12)
 
         controls = QGroupBox("Connection and Session")
-        controls_layout = QGridLayout(controls)
+        controls.setMaximumWidth(380)
+        controls_layout = QVBoxLayout(controls)
 
         self.port_combo = QComboBox()
         self.scan_button = QPushButton("Scan")
@@ -358,31 +394,56 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel("Disconnected")
         self.profile_label = QLabel("Profile: unknown")
+        self.profile_label.setWordWrap(True)
 
-        controls_layout.addWidget(QLabel("Port"), 0, 0)
-        controls_layout.addWidget(self.port_combo, 0, 1)
-        controls_layout.addWidget(self.scan_button, 0, 2)
-        controls_layout.addWidget(self.connect_button, 0, 3)
-        controls_layout.addWidget(self.disconnect_button, 0, 4)
+        connection_group = QGroupBox("Connection")
+        connection_layout = QVBoxLayout(connection_group)
+        port_row = QHBoxLayout()
+        port_row.addWidget(self.port_combo, stretch=1)
+        port_row.addWidget(self.scan_button)
+        connection_layout.addWidget(QLabel("Port"))
+        connection_layout.addLayout(port_row)
+        connection_buttons = QHBoxLayout()
+        connection_buttons.addWidget(self.connect_button)
+        connection_buttons.addWidget(self.disconnect_button)
+        connection_layout.addLayout(connection_buttons)
 
-        controls_layout.addWidget(QLabel("Operator"), 1, 0)
-        controls_layout.addWidget(self.operator_edit, 1, 1)
-        controls_layout.addWidget(QLabel("Segment Label"), 1, 2)
-        controls_layout.addWidget(self.label_edit, 1, 3)
-        controls_layout.addWidget(QLabel("Target ppm"), 1, 4)
-        controls_layout.addWidget(self.target_ppm_edit, 1, 5)
+        metadata_group = QGroupBox("Session Metadata")
+        metadata_layout = QFormLayout(metadata_group)
+        metadata_layout.addRow("Operator", self.operator_edit)
+        metadata_layout.addRow("Segment Label", self.label_edit)
+        metadata_layout.addRow("Target ppm", self.target_ppm_edit)
 
-        controls_layout.addWidget(self.record_button, 2, 0)
-        controls_layout.addWidget(self.stop_button, 2, 1)
-        controls_layout.addWidget(self.start_segment_button, 2, 2)
-        controls_layout.addWidget(self.end_segment_button, 2, 3)
-        controls_layout.addWidget(self.profile_button, 2, 4)
-        controls_layout.addWidget(self.reset_profile_button, 2, 5)
+        record_group = QGroupBox("Recording")
+        record_layout = QVBoxLayout(record_group)
+        record_buttons = QHBoxLayout()
+        record_buttons.addWidget(self.record_button)
+        record_buttons.addWidget(self.stop_button)
+        record_layout.addLayout(record_buttons)
+        segment_buttons = QHBoxLayout()
+        segment_buttons.addWidget(self.start_segment_button)
+        segment_buttons.addWidget(self.end_segment_button)
+        record_layout.addLayout(segment_buttons)
 
-        controls_layout.addWidget(self.status_label, 3, 0, 1, 3)
-        controls_layout.addWidget(self.profile_label, 3, 3, 1, 3)
+        profile_group = QGroupBox("Profile")
+        profile_layout = QVBoxLayout(profile_group)
+        profile_buttons = QHBoxLayout()
+        profile_buttons.addWidget(self.profile_button)
+        profile_buttons.addWidget(self.reset_profile_button)
+        profile_layout.addLayout(profile_buttons)
+        profile_layout.addWidget(self.profile_label)
 
-        root.addWidget(controls)
+        status_group = QGroupBox("Status")
+        status_layout = QVBoxLayout(status_group)
+        status_layout.addWidget(self.status_label)
+
+        controls_layout.addWidget(connection_group)
+        controls_layout.addWidget(metadata_group)
+        controls_layout.addWidget(record_group)
+        controls_layout.addWidget(profile_group)
+        controls_layout.addWidget(status_group)
+
+        left_column.addWidget(controls, stretch=0)
 
         span_group = QGroupBox("Plot Span")
         span_layout = QHBoxLayout(span_group)
@@ -394,22 +455,39 @@ class MainWindow(QMainWindow):
             span_layout.addWidget(button)
             self.span_buttons[label] = button
         self.span_buttons["All"].setChecked(True)
-        root.addWidget(span_group)
+        right_column.addWidget(span_group, stretch=0)
+
+        axis_group = QGroupBox("Time Axis")
+        axis_layout = QHBoxLayout(axis_group)
+        self.time_axis_buttons: Dict[str, QPushButton] = {}
+        for label, mode in TIME_AXIS_MODES:
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, value=mode, text=label: self.set_time_axis_mode(text, value, checked))
+            axis_layout.addWidget(button)
+            self.time_axis_buttons[mode] = button
+        self.time_axis_buttons["relative"].setChecked(True)
+        right_column.addWidget(axis_group, stretch=0)
 
         splitter = QSplitter(Qt.Vertical)
-        self.environment_plot = pg.PlotWidget(title="Environment")
-        self.sensor_plot = pg.PlotWidget(title="Gas Resistance and Heater Profile")
+        self.environment_axis = TimeAxisItem("bottom")
+        self.sensor_axis = TimeAxisItem("bottom")
+        self.environment_plot = pg.PlotWidget(title="Environment", axisItems={"bottom": self.environment_axis})
+        self.sensor_plot = pg.PlotWidget(title="Gas Resistance and Heater Profile", axisItems={"bottom": self.sensor_axis})
         splitter.addWidget(self.environment_plot)
         splitter.addWidget(self.sensor_plot)
         splitter.setSizes([400, 400])
-        root.addWidget(splitter, stretch=1)
+        right_column.addWidget(splitter, stretch=1)
 
         log_group = QGroupBox("Event Log")
+        log_group.setMaximumWidth(380)
         log_layout = QVBoxLayout(log_group)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         log_layout.addWidget(self.log_view)
-        root.addWidget(log_group, stretch=0)
+        left_column.addWidget(log_group, stretch=1)
+        root.addLayout(left_column, stretch=1)
+        root.addLayout(right_column, stretch=4)
 
         self.setCentralWidget(central)
 
@@ -421,6 +499,7 @@ class MainWindow(QMainWindow):
 
         self.environment_plot.addLegend()
         self.sensor_plot.addLegend(offset=(10, 10))
+        self._update_time_axis_labels()
 
         self.temperature_curve = self.environment_plot.plot(pen=pg.mkPen("#b43f3f", width=2), name="Temp C")
         self.humidity_curve = self.environment_plot.plot(pen=pg.mkPen("#3f7fb4", width=2), name="Humidity %")
@@ -434,6 +513,8 @@ class MainWindow(QMainWindow):
         env_plot_item.getAxis("right").setLabel("Pressure hPa")
         self.pressure_curve = pg.PlotCurveItem(pen=pg.mkPen("#2f8f2f", width=2))
         self.environment_pressure_view.addItem(self.pressure_curve)
+        if env_plot_item.legend is not None:
+            env_plot_item.legend.addItem(self.pressure_curve, "Pressure hPa")
         env_plot_item.vb.sigResized.connect(self._sync_environment_axes)
 
         self.gas_curves = []
@@ -455,6 +536,8 @@ class MainWindow(QMainWindow):
         sensor_plot_item.getAxis("right").setTextPen(pg.mkPen("#d33682"))
         self.heater_curve = pg.PlotCurveItem(pen=pg.mkPen("#d33682", width=3))
         self.sensor_heater_view.addItem(self.heater_curve)
+        if sensor_plot_item.legend is not None:
+            sensor_plot_item.legend.addItem(self.heater_curve, "Heater C")
         sensor_plot_item.vb.sigResized.connect(self._sync_sensor_axes)
 
     def _wire_events(self) -> None:
@@ -480,6 +563,21 @@ class MainWindow(QMainWindow):
         self.log(f"Plot span set to {label}")
         self.refresh_plots()
 
+    def set_time_axis_mode(self, label: str, mode: str, checked: bool) -> None:
+        if not checked:
+            self.time_axis_buttons[mode].setChecked(True)
+            return
+
+        for other_mode, button in self.time_axis_buttons.items():
+            button.setChecked(other_mode == mode)
+
+        self.time_axis_mode = mode
+        self.environment_axis.set_mode(mode)
+        self.sensor_axis.set_mode(mode)
+        self._update_time_axis_labels()
+        self.log(f"Time axis set to {label}")
+        self.refresh_plots()
+
     def _sync_environment_axes(self) -> None:
         env_plot_item = self.environment_plot.getPlotItem()
         self.environment_pressure_view.setGeometry(env_plot_item.vb.sceneBoundingRect())
@@ -489,6 +587,14 @@ class MainWindow(QMainWindow):
         sensor_plot_item = self.sensor_plot.getPlotItem()
         self.sensor_heater_view.setGeometry(sensor_plot_item.vb.sceneBoundingRect())
         self.sensor_heater_view.linkedViewChanged(sensor_plot_item.vb, self.sensor_heater_view.XAxis)
+
+    def _update_time_axis_labels(self) -> None:
+        if self.time_axis_mode == "clock":
+            label = "Local Time"
+        else:
+            label = "Time From Latest (HH:MM:SS)"
+        self.environment_plot.getPlotItem().setLabel("bottom", label)
+        self.sensor_plot.getPlotItem().setLabel("bottom", label)
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -773,12 +879,14 @@ class MainWindow(QMainWindow):
 
     def _append_plot_data(self, payload: Dict[str, str]) -> None:
         host_ms = float(payload["host_ms"])
+        wall_time = time.time()
         if self.last_plot_time_ms is None:
             self.last_plot_time_ms = host_ms
         elapsed_s = (host_ms - self.last_plot_time_ms) / 1000.0
 
         environment = self.data_buffers["environment"]
         environment["time"].append(elapsed_s)
+        environment["wall_time"].append(wall_time)
         environment["temp"].append(float(payload["temp_c"]))
         environment["humidity"].append(float(payload["humidity_pct"]))
         environment["pressure"].append(float(payload["pressure_hpa"]))
@@ -787,11 +895,13 @@ class MainWindow(QMainWindow):
         if 0 <= gas_index < len(self.data_buffers["gas"]):
             gas_trace = self.data_buffers["gas"][gas_index]
             gas_trace["time"].append(elapsed_s)
+            gas_trace["wall_time"].append(wall_time)
             gas_trace["value"].append(float(payload["gas_kohms"]))
 
         heater_temp = self._heater_temp_for_step(int(payload["frame_step"]))
         heater = self.data_buffers["heater"]
         heater["time"].append(elapsed_s)
+        heater["wall_time"].append(wall_time)
         heater["value"].append(heater_temp)
 
     def _heater_temp_for_step(self, frame_step: int) -> float:
@@ -857,25 +967,36 @@ class MainWindow(QMainWindow):
         windowed_y = y_values[start_index:]
         return self._downsample_series(windowed_x, windowed_y, self._max_plot_points())
 
+    def _time_series_for(self, series: Dict[str, List[float]]) -> List[float]:
+        if self.time_axis_mode == "clock":
+            return series["wall_time"]
+
+        relative_times = series["time"]
+        if not relative_times:
+            return relative_times
+        latest_time = relative_times[-1]
+        return [value - latest_time for value in relative_times]
+
     def refresh_plots(self) -> None:
         environment = self.data_buffers["environment"]
         if not environment["time"]:
             return
 
-        env_x, env_temp = self._window_series(environment["time"], environment["temp"])
-        _, env_humidity = self._window_series(environment["time"], environment["humidity"])
-        _, env_pressure = self._window_series(environment["time"], environment["pressure"])
+        env_time = self._time_series_for(environment)
+        env_x, env_temp = self._window_series(env_time, environment["temp"])
+        _, env_humidity = self._window_series(env_time, environment["humidity"])
+        _, env_pressure = self._window_series(env_time, environment["pressure"])
         self.temperature_curve.setData(env_x, env_temp)
         self.humidity_curve.setData(env_x, env_humidity)
         self.pressure_curve.setData(env_x, env_pressure)
 
         for idx, curve in enumerate(self.gas_curves):
             gas_trace = self.data_buffers["gas"][idx]
-            gas_x, gas_y = self._window_series(gas_trace["time"], gas_trace["value"])
+            gas_x, gas_y = self._window_series(self._time_series_for(gas_trace), gas_trace["value"])
             curve.setData(gas_x, gas_y)
 
         heater = self.data_buffers["heater"]
-        heater_x, heater_y = self._window_series(heater["time"], heater["value"])
+        heater_x, heater_y = self._window_series(self._time_series_for(heater), heater["value"])
         self.heater_curve.setData(heater_x, heater_y)
 
     def _write_csv_header(self) -> None:
