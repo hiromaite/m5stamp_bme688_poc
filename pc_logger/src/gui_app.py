@@ -52,9 +52,9 @@ SPAN_OPTIONS: List[Tuple[str, Optional[float]]] = [
 
 def configure_qt_runtime() -> None:
     pyside_dir = Path(PYSIDE6_FILE).resolve().parent
-    plugins_dir = pyside_dir / "Qt" / "plugins"
+    plugins_dir = pyside_dir / "plugins"
     platform_plugins_dir = plugins_dir / "platforms"
-    qt_lib_dir = pyside_dir / "Qt" / "lib"
+    qt_lib_dir = pyside_dir
 
     if not os.environ.get("QT_PLUGIN_PATH"):
         os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
