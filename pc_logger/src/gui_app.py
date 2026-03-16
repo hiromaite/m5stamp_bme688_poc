@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pyqtgraph as pg
-import PySide6
 import serial
+from PySide6 import __file__ as PYSIDE6_FILE
 from PySide6.QtCore import QCoreApplication, QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 from serial.tools import list_ports
 
+from app_metadata import APP_NAME, APP_VERSION
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 
 
@@ -50,10 +51,10 @@ SPAN_OPTIONS: List[Tuple[str, Optional[float]]] = [
 
 
 def configure_qt_runtime() -> None:
-    pyside_dir = Path(PySide6.__file__).resolve().parent
-    plugins_dir = pyside_dir / "Qt" / "plugins"
+    pyside_dir = Path(PYSIDE6_FILE).resolve().parent
+    plugins_dir = pyside_dir / "plugins"
     platform_plugins_dir = plugins_dir / "platforms"
-    qt_lib_dir = pyside_dir / "Qt" / "lib"
+    qt_lib_dir = pyside_dir
 
     if not os.environ.get("QT_PLUGIN_PATH"):
         os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
@@ -261,7 +262,7 @@ class ProfileDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("H2S Benchmark GUI Shell")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1440, 900)
 
         self.worker: Optional[SerialWorker] = None
@@ -772,6 +773,8 @@ class MainWindow(QMainWindow):
         lines = [
             "# file_format=h2s_benchmark_csv_v1",
             f"# exported_at_iso={now_iso}",
+            f"# gui_app_name={APP_NAME}",
+            f"# gui_app_version={APP_VERSION}",
             f"# operator_id={self.operator_edit.text().strip()}",
             f"# session_id={datetime.now().strftime('%Y%m%d_%H%M%S_run01')}",
             "# gui_git_commit=working_tree",
