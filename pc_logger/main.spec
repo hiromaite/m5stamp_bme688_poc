@@ -5,7 +5,7 @@ from pathlib import Path
 import PySide6
 
 
-PROJECT_DIR = Path(SPECPATH).resolve().parent
+PROJECT_DIR = Path(SPECPATH).resolve()
 PYSIDE_DIR = Path(PySide6.__file__).resolve().parent
 PYSIDE_PLUGINS = PYSIDE_DIR / "plugins"
 
