@@ -59,7 +59,7 @@ pip install -r requirements.txt
 pyinstaller --clean main.spec
 ```
 
-ビルドされた実行可能ファイルは `dist/main.exe` に生成されます。
+ビルドされた実行可能ファイルは `dist/bme688_logger.exe` に生成されます。
 
 ### 実行
 
@@ -76,7 +76,7 @@ python main.py
 または、ビルドされた実行可能ファイルを使用:
 
 ```bash
-dist/main.exe
+dist/bme688_logger.exe
 ```
 
 ## Windows パッケージング

@@ -295,6 +295,7 @@ class MainWindow(QMainWindow):
         self.last_plot_time_ms = None
         self.last_pong_iso = ""
         self.selected_span_seconds: Optional[float] = None
+        self.last_selected_port = ""
 
         self._build_ui()
         self._setup_plots()
@@ -432,7 +433,8 @@ class MainWindow(QMainWindow):
         sensor_plot_item.getAxis("right").linkToView(self.sensor_heater_view)
         self.sensor_heater_view.setXLink(sensor_plot_item)
         sensor_plot_item.getAxis("right").setLabel("Heater C")
-        self.heater_curve = pg.PlotCurveItem(pen=pg.mkPen("#111827", width=2))
+        sensor_plot_item.getAxis("right").setTextPen(pg.mkPen("#d33682"))
+        self.heater_curve = pg.PlotCurveItem(pen=pg.mkPen("#d33682", width=3))
         self.sensor_heater_view.addItem(self.heater_curve)
         sensor_plot_item.vb.sigResized.connect(self._sync_sensor_axes)
 
@@ -473,13 +475,56 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"[{timestamp}] {message}")
 
+    @staticmethod
+    def _port_priority(port_info) -> Tuple[int, int, str]:
+        device = (port_info.device or "").lower()
+        description = (port_info.description or "").lower()
+        manufacturer = (port_info.manufacturer or "").lower()
+        hwid = (port_info.hwid or "").lower()
+
+        score = 0
+        keywords = [
+            "m5",
+            "stamp",
+            "esp32",
+            "usb jtag",
+            "cp210",
+            "ch340",
+            "wch",
+            "silicon labs",
+        ]
+        for keyword in keywords:
+            if keyword in description or keyword in manufacturer or keyword in hwid:
+                score += 20
+
+        if "usbmodem" in device:
+            score += 15
+        if "cu." in device or "com" in device:
+            score += 5
+
+        return (-score, len(device), device)
+
+    def _choose_preferred_port(self, ports_info, current: str) -> str:
+        if current and any(port.device == current for port in ports_info):
+            return current
+        if self.last_selected_port and any(port.device == self.last_selected_port for port in ports_info):
+            return self.last_selected_port
+        if not ports_info:
+            return ""
+        best_port = sorted(ports_info, key=self._port_priority)[0]
+        return best_port.device
+
     def refresh_ports(self) -> None:
         current = self.port_combo.currentText()
         self.port_combo.clear()
-        ports = [port.device for port in list_ports.comports()]
+        ports_info = list(list_ports.comports())
+        ports = [port.device for port in ports_info]
         self.port_combo.addItems(ports)
-        if current and current in ports:
-            self.port_combo.setCurrentText(current)
+        preferred_port = self._choose_preferred_port(ports_info, current)
+        if preferred_port:
+            self.port_combo.setCurrentText(preferred_port)
+            self.last_selected_port = preferred_port
+            self.log(f"Selected port: {preferred_port}")
         self.log(f"Scanned ports: {', '.join(ports) if ports else 'none'}")
 
     def connect_serial(self) -> None:
@@ -488,6 +533,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Port", "Select a serial port first.")
             return
 
+        self.last_selected_port = port
         self.worker = SerialWorker(port)
         self.worker.line_received.connect(self.handle_serial_line)
         self.worker.connection_changed.connect(self.handle_connection_changed)
