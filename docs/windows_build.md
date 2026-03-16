@@ -15,7 +15,9 @@ fallback:
 - `pyside6-deploy`
 - deploy mode はまず `standalone`
 
-本プロジェクトは `PySide6` と `pyqtgraph` を利用しているため、PyInstallerでのパッケージ化を推奨します。
+本プロジェクトは `PySide6` と `pyqtgraph` を利用しており、Windows 実機で
+`PyInstaller` によるパッケージ化成功を確認済みです。現時点では
+`PyInstaller` を主経路とし、`pyside6-deploy` は fallback として扱います。
 
 ## PyInstaller でのパッケージング (主経路)
 
@@ -23,65 +25,41 @@ fallback:
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-pip install pyinstaller pyinstaller-hooks-contrib
-pyi-makespec --onefile --windowed main.py
-# main.spec を編集: pathex, hiddenimports, datas, hookspath を設定
 pyinstaller --clean main.spec
 ```
 
-main.spec の hiddenimports セクション:
+`main.spec` はリポジトリに含めてあり、以下をすでに反映しています。
 
-```python
-hiddenimports=[
-    'pyqtgraph',
-    'pyqtgraph.Qt',
-    'pyqtgraph.Qt.QtCore',
-    'pyqtgraph.Qt.QtGui',
-    'pyqtgraph.Qt.QtWidgets',
-    'PySide6',
-    'PySide6.QtCore',
-    'PySide6.QtWidgets',
-    'PySide6.QtGui',
-    'serial',
-    'serial.tools',
-    'serial.tools.list_ports',
-    'app_metadata',
-    'serial_protocol'
-],
-```
-
-main.spec の datas セクション:
-
-```python
-datas=[('C:\\Users\\hiroma-ito.NGKNTK\\Documents\\PlatformIO\\Projects\\m5stamp_bme688_poc\\pc_logger\\.venv\\Lib\\site-packages\\PySide6\\plugins', 'PySide6/plugins')],
-```
+- `src` を含む `pathex`
+- `PySide6` plugin ディレクトリの動的解決
+- `pyqtgraph`, `serial`, `app_metadata`, `serial_protocol` などの hiddenimports
+- `windowed` 実行形式
 
 ## 想定する Windows ビルド環境
 
 - `Windows 11`
 - Python `3.12`
 - `pc_logger/.venv` に作成した新しい仮想環境
-- Visual Studio Build Tools または MSVC ツールを含む Visual Studio
-- `PATH` 上で利用可能な `dumpbin`
 
 ## パッケージング用に準備したプロジェクトファイル
 
 - `pc_logger/main.py`
   - packaging 用 GUI エントリポイント
+- `pc_logger/main.spec`
+  - `PyInstaller` 用 spec
 - `pc_logger/pc_logger.pyproject`
-  - Qt project 記述
-- `pc_logger/pysidedeploy.spec`
-  - `pyside6-deploy` 用に生成または管理する deployment 設定
+  - 将来 `pyside6-deploy` を再試行する場合の Qt project 記述
 
-## 最初のパッケージング試行
+## fallback: pyside6-deploy 再試行時のメモ
 
-Windows 上で `pc_logger/` に移動して実行します。
+必要になった場合は Windows 上で `pc_logger/` に移動して以下を実行します。
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-pyside6-deploy -c pysidedeploy.spec -f --mode standalone
+pyside6-deploy --init main.py
+pyside6-deploy -f --mode standalone main.py
 ```
 
 ## Windows スモークテスト項目
@@ -98,6 +76,6 @@ pyside6-deploy -c pysidedeploy.spec -f --mode standalone
 
 ## 未確定事項
 
-- 配布物として `standalone` 出力で十分か、将来的に single-file 形式が必要か
+- onefile 出力の起動速度や安定性が運用上十分か
 - `v01.00` 前にアプリアイコンを追加するか
 - リリース工程で Windows のコード署名が必要か

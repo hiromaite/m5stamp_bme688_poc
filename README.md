@@ -56,9 +56,6 @@ cd pc_logger
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-pip install pyinstaller pyinstaller-hooks-contrib
-pyi-makespec --onefile --windowed main.py
-# main.spec を編集: pathex=['src'], hiddenimports, datas, hookspath を設定
 pyinstaller --clean main.spec
 ```
 
@@ -80,14 +77,6 @@ python main.py
 
 ```bash
 dist/main.exe
-```
-
-```bash
-cd pc_logger
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python main.py
 ```
 
 ## Windows パッケージング

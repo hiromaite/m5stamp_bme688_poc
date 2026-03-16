@@ -23,6 +23,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Windows で実行ファイル化する場合も、まず同じ `requirements.txt` を使って
+環境を整えます。
+
 ## CLI ロガーの起動
 
 ```bash
@@ -92,11 +95,11 @@ GUI が現在解釈できる行ファミリ:
 
 主経路:
 
-- `pyside6-deploy`
-- まず `standalone` mode
+- `PyInstaller`
+- `main.spec` を使った `--onefile` パッケージング
 
 fallback:
 
-- `PyInstaller`
+- `pyside6-deploy`
 
 現在の Windows ビルドメモは [../docs/windows_build.md](../docs/windows_build.md) を参照してください。

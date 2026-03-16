@@ -1,11 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+import PySide6
+
+
+PROJECT_DIR = Path(SPECPATH).resolve().parent
+PYSIDE_DIR = Path(PySide6.__file__).resolve().parent
+PYSIDE_PLUGINS = PYSIDE_DIR / "plugins"
+
 
 a = Analysis(
     ['main.py'],
-    pathex=['src'],
+    pathex=[str(PROJECT_DIR / 'src')],
     binaries=[],
-    datas=[('C:\\Users\\hiroma-ito.NGKNTK\\Documents\\PlatformIO\\Projects\\m5stamp_bme688_poc\\pc_logger\\.venv\\Lib\\site-packages\\PySide6\\plugins', 'PySide6/plugins')],
+    datas=[(str(PYSIDE_PLUGINS), 'PySide6/plugins')],
     hiddenimports=[
         'pyqtgraph',
         'pyqtgraph.Qt',
@@ -20,12 +29,9 @@ a = Analysis(
         'serial.tools',
         'serial.tools.list_ports',
         'app_metadata',
-        'serial_protocol'
+        'serial_protocol',
     ],
-    hookspath=[
-        'C:\\Users\\hiroma-ito.NGKNTK\\Documents\\PlatformIO\\Projects\\m5stamp_bme688_poc\\pc_logger\\.venv\\Lib\\site-packages\\PyInstaller\\hooks',
-        'C:\\Users\\hiroma-ito.NGKNTK\\Documents\\PlatformIO\\Projects\\m5stamp_bme688_poc\\pc_logger\\.venv\\Lib\\site-packages\\pyinstaller_hooks_contrib'
-    ],
+    hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],

@@ -322,8 +322,8 @@ LoD の定義基準は以下とする。
 デプロイ方針:
 
 - GUI は Windows 11 向けにパッケージ化できる構成で設計する
-- 初期段階から `pyside6-deploy` と相性の良い project structure を優先する
-- ツール都合がある場合に限り `PyInstaller` を fallback として保持する
+- Windows 実行ファイル化の主経路は `PyInstaller` とする
+- `pyside6-deploy` は fallback として保持する
 
 Windows 電源管理方針:
 
@@ -342,6 +342,7 @@ Windows 電源管理方針:
 - 初期 GUI スコープ: minimal GUI with staged expansion
 - 初期出力形式: CSV only
 - メタデータ格納位置: CSV header
+- Windows packaging 主経路: `PyInstaller`
 - firmware 動作: continuous streaming after boot
 - プロファイル動作:
   - 起動時に 1 つのデフォルトプロファイルを読み込む
