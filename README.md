@@ -47,7 +47,40 @@
 
 詳細は [pc_logger/README.md](pc_logger/README.md) を参照してください。
 
+### ビルド (PyInstaller)
+
+Windows でスタンドアロン実行可能ファイルをビルドするには:
+
+```bash
+cd pc_logger
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller pyinstaller-hooks-contrib
+pyi-makespec --onefile --windowed main.py
+# main.spec を編集: pathex=['src'], hiddenimports, datas, hookspath を設定
+pyinstaller --clean main.spec
+```
+
+ビルドされた実行可能ファイルは `dist/main.exe` に生成されます。
+
+### 実行
+
 Python 環境を構築できる場合は、以下の手順で GUI を起動できます。
+
+```bash
+cd pc_logger
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+```
+
+または、ビルドされた実行可能ファイルを使用:
+
+```bash
+dist/main.exe
+```
 
 ```bash
 cd pc_logger

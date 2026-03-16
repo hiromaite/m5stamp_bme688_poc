@@ -7,16 +7,54 @@
 
 主経路:
 
-- `pyside6-deploy`
-- deploy mode はまず `standalone`
+- `PyInstaller` (--onefileモード)
+- 単一実行ファイル生成で配布が容易
 
 fallback:
 
-- `PyInstaller`
+- `pyside6-deploy`
+- deploy mode はまず `standalone`
 
-本プロジェクトは `PySide6` と `pyqtgraph` を利用しているため、最初の
-パッケージング試行は Qt for Python の公式デプロイフローに従うことを
-推奨します。
+本プロジェクトは `PySide6` と `pyqtgraph` を利用しているため、PyInstallerでのパッケージ化を推奨します。
+
+## PyInstaller でのパッケージング (主経路)
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller pyinstaller-hooks-contrib
+pyi-makespec --onefile --windowed main.py
+# main.spec を編集: pathex, hiddenimports, datas, hookspath を設定
+pyinstaller --clean main.spec
+```
+
+main.spec の hiddenimports セクション:
+
+```python
+hiddenimports=[
+    'pyqtgraph',
+    'pyqtgraph.Qt',
+    'pyqtgraph.Qt.QtCore',
+    'pyqtgraph.Qt.QtGui',
+    'pyqtgraph.Qt.QtWidgets',
+    'PySide6',
+    'PySide6.QtCore',
+    'PySide6.QtWidgets',
+    'PySide6.QtGui',
+    'serial',
+    'serial.tools',
+    'serial.tools.list_ports',
+    'app_metadata',
+    'serial_protocol'
+],
+```
+
+main.spec の datas セクション:
+
+```python
+datas=[('C:\\Users\\hiroma-ito.NGKNTK\\Documents\\PlatformIO\\Projects\\m5stamp_bme688_poc\\pc_logger\\.venv\\Lib\\site-packages\\PySide6\\plugins', 'PySide6/plugins')],
+```
 
 ## 想定する Windows ビルド環境
 
