@@ -53,6 +53,7 @@ SPAN_OPTIONS: List[Tuple[str, Optional[float]]] = [
 MAX_PLOT_POINTS_SHORT = 1800
 MAX_PLOT_POINTS_MEDIUM = 1200
 MAX_PLOT_POINTS_LONG = 800
+PLOT_RANGE_MARGIN_RATIO = 0.15
 CSV_FLUSH_INTERVAL_SECONDS = 5.0
 CSV_FLUSH_ROW_THRESHOLD = 25
 
@@ -399,6 +400,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Vertical)
         self.environment_plot = pg.PlotWidget(title="Environment")
         self.sensor_plot = pg.PlotWidget(title="Gas Resistance and Heater Profile")
+        self.sensor_plot.setXLink(self.environment_plot)
         splitter.addWidget(self.environment_plot)
         splitter.addWidget(self.sensor_plot)
         splitter.setSizes([400, 400])
@@ -478,6 +480,7 @@ class MainWindow(QMainWindow):
 
         self.selected_span_seconds = seconds
         self.log(f"Plot span set to {label}")
+        self._apply_plot_span()
         self.refresh_plots()
 
     def _sync_environment_axes(self) -> None:
@@ -489,6 +492,39 @@ class MainWindow(QMainWindow):
         sensor_plot_item = self.sensor_plot.getPlotItem()
         self.sensor_heater_view.setGeometry(sensor_plot_item.vb.sceneBoundingRect())
         self.sensor_heater_view.linkedViewChanged(sensor_plot_item.vb, self.sensor_heater_view.XAxis)
+
+    def _current_plot_center(self) -> Optional[float]:
+        environment = self.data_buffers["environment"]
+        if not environment["time"]:
+            return None
+
+        x_range = self.environment_plot.getPlotItem().vb.viewRange()[0]
+        if x_range and len(x_range) == 2:
+            return (x_range[0] + x_range[1]) / 2.0
+
+        return environment["time"][-1] / 2.0
+
+    def _apply_plot_span(self) -> None:
+        environment = self.data_buffers["environment"]
+        if not environment["time"]:
+            return
+
+        if self.selected_span_seconds is None:
+            self.environment_plot.enableAutoRange(axis="x", enable=True)
+            self.sensor_plot.enableAutoRange(axis="x", enable=True)
+            return
+
+        center = self._current_plot_center()
+        if center is None:
+            return
+
+        half_span = self.selected_span_seconds / 2.0
+        x_min = center - half_span
+        x_max = center + half_span
+        self.environment_plot.enableAutoRange(axis="x", enable=False)
+        self.sensor_plot.enableAutoRange(axis="x", enable=False)
+        self.environment_plot.setXRange(x_min, x_max, padding=0)
+        self.sensor_plot.setXRange(x_min, x_max, padding=0)
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -819,12 +855,12 @@ class MainWindow(QMainWindow):
         self.pending_csv_rows = 0
         self.last_csv_flush_at = now
 
-    def _max_plot_points(self) -> int:
-        if self.selected_span_seconds is None:
+    def _max_plot_points(self, visible_width: Optional[float]) -> int:
+        if visible_width is None:
             return MAX_PLOT_POINTS_LONG
-        if self.selected_span_seconds <= 10 * 60.0:
+        if visible_width <= 10 * 60.0:
             return MAX_PLOT_POINTS_SHORT
-        if self.selected_span_seconds <= 30 * 60.0:
+        if visible_width <= 30 * 60.0:
             return MAX_PLOT_POINTS_MEDIUM
         return MAX_PLOT_POINTS_LONG
 
@@ -843,19 +879,50 @@ class MainWindow(QMainWindow):
 
         return sampled_x, sampled_y
 
+    def _visible_x_range(self) -> Optional[Tuple[float, float]]:
+        x_range = self.environment_plot.getPlotItem().vb.viewRange()[0]
+        if not x_range or len(x_range) != 2:
+            return None
+        left, right = x_range
+        if left == right:
+            return None
+        if left > right:
+            left, right = right, left
+        return left, right
+
+    def _sampling_x_range(self) -> Optional[Tuple[float, float]]:
+        x_range = self._visible_x_range()
+        if x_range is None:
+            return None
+
+        left, right = x_range
+        width = right - left
+        if width <= 0:
+            return x_range
+
+        margin = width * PLOT_RANGE_MARGIN_RATIO
+        return left - margin, right + margin
+
     def _window_series(self, x_values: List[float], y_values: List[float]) -> Tuple[List[float], List[float]]:
         if not x_values or not y_values:
             return [], []
 
-        if self.selected_span_seconds is None:
-            start_index = 0
-        else:
-            threshold = x_values[-1] - self.selected_span_seconds
-            start_index = bisect.bisect_left(x_values, threshold)
+        x_range = self._sampling_x_range()
+        if x_range is None:
+            return self._downsample_series(x_values, y_values, self._max_plot_points(None))
 
-        windowed_x = x_values[start_index:]
-        windowed_y = y_values[start_index:]
-        return self._downsample_series(windowed_x, windowed_y, self._max_plot_points())
+        left, right = x_range
+        start_index = bisect.bisect_left(x_values, left)
+        end_index = bisect.bisect_right(x_values, right)
+
+        if start_index == end_index:
+            return [], []
+
+        windowed_x = x_values[start_index:end_index]
+        windowed_y = y_values[start_index:end_index]
+        visible_range = self._visible_x_range()
+        visible_width = (visible_range[1] - visible_range[0]) if visible_range is not None else (right - left)
+        return self._downsample_series(windowed_x, windowed_y, self._max_plot_points(visible_width))
 
     def refresh_plots(self) -> None:
         environment = self.data_buffers["environment"]
