@@ -9,6 +9,30 @@ uint16_t profileTimeBaseMs = app_config::kDefaultProfileTimeBaseMs;
 uint8_t currentProfileLength = app_config::kMaxProfileLength;
 bool runtimeProfileActive = false;
 
+bool parseStrictUint16(const String &input, uint16_t &parsedValue) {
+  String token = input;
+  token.trim();
+  if (token.isEmpty()) {
+    return false;
+  }
+
+  uint32_t value = 0;
+  for (unsigned int i = 0; i < token.length(); ++i) {
+    const char ch = token.charAt(i);
+    if (ch < '0' || ch > '9') {
+      return false;
+    }
+
+    value = (value * 10U) + static_cast<uint32_t>(ch - '0');
+    if (value > 65535U) {
+      return false;
+    }
+  }
+
+  parsedValue = static_cast<uint16_t>(value);
+  return true;
+}
+
 bool parseUint16List(const String &input, uint16_t *output, uint8_t &parsedLength) {
   int start = 0;
   parsedLength = 0;
@@ -20,15 +44,15 @@ bool parseUint16List(const String &input, uint16_t *output, uint8_t &parsedLengt
       return false;
     }
 
-    const long parsed = token.toInt();
-    if (parsed < 0 || parsed > 65535) {
+    uint16_t parsed = 0;
+    if (!parseStrictUint16(token, parsed)) {
       return false;
     }
     if (parsedLength >= app_config::kMaxProfileLength) {
       return false;
     }
 
-    output[parsedLength++] = static_cast<uint16_t>(parsed);
+    output[parsedLength++] = parsed;
     if (comma == -1) {
       break;
     }
@@ -101,14 +125,14 @@ bool applyFromCommandValues(const String &tempValue,
     return false;
   }
 
-  const long parsedTimeBase = baseValue.toInt();
-  if (parsedTimeBase <= 0 || parsedTimeBase > 65535) {
+  uint16_t parsedTimeBase = 0;
+  if (!parseStrictUint16(baseValue, parsedTimeBase) || parsedTimeBase == 0) {
     errorCode = "invalid_time_base";
     return false;
   }
 
   errorIsValidation = true;
-  if (!validateProfileValues(tempProfile, durationProfile, static_cast<uint16_t>(parsedTimeBase), parsedTempLength, errorCode)) {
+  if (!validateProfileValues(tempProfile, durationProfile, parsedTimeBase, parsedTempLength, errorCode)) {
     return false;
   }
   errorIsValidation = false;
@@ -123,7 +147,7 @@ bool applyFromCommandValues(const String &tempValue,
     }
   }
 
-  profileTimeBaseMs = static_cast<uint16_t>(parsedTimeBase);
+  profileTimeBaseMs = parsedTimeBase;
   currentProfileLength = parsedTempLength;
   runtimeProfileActive = true;
   return true;
