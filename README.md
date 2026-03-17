@@ -13,10 +13,11 @@
   - `parallel mode`
   - シリアル経由でのランタイムヒータープロファイル制御
 - `pc_logger/`
-  - Python GUI / CLI ロガー
+  - Python GUI ロガー
   - ライブプロット
   - 記録と暴露セグメントのラベリング
   - GUI からのヒータープロファイル編集
+  - `poc/` 配下に旧 CLI ロガーをアーカイブ
 - `docs/requirements_v1.md`
   - 承認済みのシステム要件ベースライン
 
