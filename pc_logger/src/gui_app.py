@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import bisect
 import csv
 import ctypes
 import os
@@ -53,9 +52,9 @@ SPAN_OPTIONS: List[Tuple[str, Optional[float]]] = [
 MAX_PLOT_POINTS_SHORT = 1800
 MAX_PLOT_POINTS_MEDIUM = 1200
 MAX_PLOT_POINTS_LONG = 800
-PLOT_RANGE_MARGIN_RATIO = 0.15
 CSV_FLUSH_INTERVAL_SECONDS = 5.0
 CSV_FLUSH_ROW_THRESHOLD = 25
+PLOT_REFRESH_INTERVAL_MS = 150
 TIME_AXIS_MODES: List[Tuple[str, str]] = [
     ("Relative", "relative"),
     ("Clock", "clock"),
@@ -103,19 +102,29 @@ class TimeAxisItem(pg.AxisItem):
     def __init__(self, orientation: str = "bottom") -> None:
         super().__init__(orientation=orientation)
         self.mode = "relative"
+        self.latest_elapsed = 0.0
+        self.session_start_epoch: Optional[float] = None
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
+
+    def set_reference(self, latest_elapsed: float, session_start_epoch: Optional[float]) -> None:
+        self.latest_elapsed = latest_elapsed
+        self.session_start_epoch = session_start_epoch
 
     def tickStrings(self, values, scale, spacing):  # type: ignore[override]
         labels = []
         for value in values:
             if self.mode == "clock":
-                labels.append(datetime.fromtimestamp(value).strftime("%H:%M:%S"))
+                if self.session_start_epoch is None:
+                    labels.append("")
+                else:
+                    labels.append(datetime.fromtimestamp(self.session_start_epoch + value).strftime("%H:%M:%S"))
                 continue
 
-            sign = "-" if value < 0 else ""
-            total_seconds = max(0, int(round(abs(value))))
+            delta = value - self.latest_elapsed
+            sign = "-" if delta < 0 else ""
+            total_seconds = max(0, int(round(abs(delta))))
             hours, remainder = divmod(total_seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
             labels.append(f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}")
@@ -329,23 +338,23 @@ class MainWindow(QMainWindow):
         self.data_buffers = {
             "environment": {
                 "time": [],
-                "wall_time": [],
                 "temp": [],
                 "humidity": [],
                 "pressure": [],
             },
             "heater": {
                 "time": [],
-                "wall_time": [],
                 "value": [],
             },
-            "gas": [{"time": [], "wall_time": [], "value": []} for _ in range(10)],
+            "gas": [{"time": [], "value": []} for _ in range(10)],
         }
         self.last_plot_time_ms = None
         self.last_pong_iso = ""
         self.selected_span_seconds: Optional[float] = None
         self.time_axis_mode = "relative"
         self.last_selected_port = ""
+        self.session_start_epoch: Optional[float] = None
+        self.plot_dirty = False
 
         self._build_ui()
         self._setup_plots()
@@ -353,8 +362,8 @@ class MainWindow(QMainWindow):
         self.refresh_ports()
 
         self.plot_timer = QTimer(self)
-        self.plot_timer.timeout.connect(self.refresh_plots)
-        self.plot_timer.start(500)
+        self.plot_timer.timeout.connect(self._refresh_plots_if_dirty)
+        self.plot_timer.start(PLOT_REFRESH_INTERVAL_MS)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -494,7 +503,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
     def _setup_plots(self) -> None:
-        pg.setConfigOptions(antialias=True)
+        pg.setConfigOptions(antialias=False)
 
         self.environment_plot.showGrid(x=True, y=True, alpha=0.3)
         self.sensor_plot.showGrid(x=True, y=True, alpha=0.3)
@@ -513,11 +522,12 @@ class MainWindow(QMainWindow):
         env_plot_item.getAxis("right").linkToView(self.environment_pressure_view)
         self.environment_pressure_view.setXLink(env_plot_item)
         env_plot_item.getAxis("right").setLabel("Pressure hPa")
-        self.pressure_curve = pg.PlotCurveItem(pen=pg.mkPen("#2f8f2f", width=2))
+        self.pressure_curve = pg.PlotDataItem(pen=pg.mkPen("#2f8f2f", width=2))
         self.environment_pressure_view.addItem(self.pressure_curve)
         if env_plot_item.legend is not None:
             env_plot_item.legend.addItem(self.pressure_curve, "Pressure hPa")
         env_plot_item.vb.sigResized.connect(self._sync_environment_axes)
+        env_plot_item.vb.sigXRangeChanged.connect(self._handle_plot_x_range_changed)
 
         self.gas_curves = []
         colors = [
@@ -526,6 +536,9 @@ class MainWindow(QMainWindow):
         ]
         for index, color in enumerate(colors):
             curve = self.sensor_plot.plot(pen=pg.mkPen(color, width=1.5), name=f"Gas {index}")
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setSkipFiniteCheck(True)
             self.gas_curves.append(curve)
 
         sensor_plot_item = self.sensor_plot.getPlotItem()
@@ -536,11 +549,17 @@ class MainWindow(QMainWindow):
         self.sensor_heater_view.setXLink(sensor_plot_item)
         sensor_plot_item.getAxis("right").setLabel("Heater C")
         sensor_plot_item.getAxis("right").setTextPen(pg.mkPen("#d33682"))
-        self.heater_curve = pg.PlotCurveItem(pen=pg.mkPen("#d33682", width=3))
+        self.heater_curve = pg.PlotDataItem(pen=pg.mkPen("#d33682", width=3))
         self.sensor_heater_view.addItem(self.heater_curve)
         if sensor_plot_item.legend is not None:
             sensor_plot_item.legend.addItem(self.heater_curve, "Heater C")
         sensor_plot_item.vb.sigResized.connect(self._sync_sensor_axes)
+        sensor_plot_item.vb.sigXRangeChanged.connect(self._handle_plot_x_range_changed)
+
+        for curve in (self.temperature_curve, self.humidity_curve, self.pressure_curve, self.heater_curve):
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setSkipFiniteCheck(True)
 
     def _wire_events(self) -> None:
         self.scan_button.clicked.connect(self.refresh_ports)
@@ -631,6 +650,20 @@ class MainWindow(QMainWindow):
             label = "Time From Latest (HH:MM:SS)"
         self.environment_plot.getPlotItem().setLabel("bottom", label)
         self.sensor_plot.getPlotItem().setLabel("bottom", label)
+
+    def _invalidate_time_axes(self) -> None:
+        for axis in (self.environment_axis, self.sensor_axis):
+            axis.picture = None
+            axis.update()
+
+    def _handle_plot_x_range_changed(self, *_args) -> None:
+        self._invalidate_time_axes()
+
+    def _refresh_plots_if_dirty(self) -> None:
+        if not self.plot_dirty:
+            return
+        self.refresh_plots()
+        self.plot_dirty = False
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -899,6 +932,7 @@ class MainWindow(QMainWindow):
 
         row = enrich_csv_row(parsed.payload, parsed.raw_line)
         self._append_plot_data(parsed.payload)
+        self.plot_dirty = True
         if self.csv_writer and self.csv_file:
             segment = self.current_segment
             export_row = {
@@ -915,14 +949,14 @@ class MainWindow(QMainWindow):
 
     def _append_plot_data(self, payload: Dict[str, str]) -> None:
         host_ms = float(payload["host_ms"])
-        wall_time = time.time()
         if self.last_plot_time_ms is None:
             self.last_plot_time_ms = host_ms
         elapsed_s = (host_ms - self.last_plot_time_ms) / 1000.0
+        if self.session_start_epoch is None:
+            self.session_start_epoch = time.time() - elapsed_s
 
         environment = self.data_buffers["environment"]
         environment["time"].append(elapsed_s)
-        environment["wall_time"].append(wall_time)
         environment["temp"].append(float(payload["temp_c"]))
         environment["humidity"].append(float(payload["humidity_pct"]))
         environment["pressure"].append(float(payload["pressure_hpa"]))
@@ -931,13 +965,11 @@ class MainWindow(QMainWindow):
         if 0 <= gas_index < len(self.data_buffers["gas"]):
             gas_trace = self.data_buffers["gas"][gas_index]
             gas_trace["time"].append(elapsed_s)
-            gas_trace["wall_time"].append(wall_time)
             gas_trace["value"].append(float(payload["gas_kohms"]))
 
         heater_temp = self._heater_temp_for_step(int(payload["frame_step"]))
         heater = self.data_buffers["heater"]
         heater["time"].append(elapsed_s)
-        heater["wall_time"].append(wall_time)
         heater["value"].append(heater_temp)
 
     def _heater_temp_for_step(self, frame_step: int) -> float:
@@ -965,106 +997,27 @@ class MainWindow(QMainWindow):
         self.pending_csv_rows = 0
         self.last_csv_flush_at = now
 
-    def _max_plot_points(self, visible_width: Optional[float]) -> int:
-        if visible_width is None:
-            return MAX_PLOT_POINTS_LONG
-        if visible_width <= 10 * 60.0:
-            return MAX_PLOT_POINTS_SHORT
-        if visible_width <= 30 * 60.0:
-            return MAX_PLOT_POINTS_MEDIUM
-        return MAX_PLOT_POINTS_LONG
-
-    @staticmethod
-    def _downsample_series(x_values: List[float], y_values: List[float], max_points: int) -> Tuple[List[float], List[float]]:
-        if len(x_values) <= max_points:
-            return x_values, y_values
-
-        step = max(1, (len(x_values) + max_points - 1) // max_points)
-        sampled_x = x_values[::step]
-        sampled_y = y_values[::step]
-
-        if sampled_x[-1] != x_values[-1]:
-            sampled_x.append(x_values[-1])
-            sampled_y.append(y_values[-1])
-
-        return sampled_x, sampled_y
-
-    def _visible_x_range(self) -> Optional[Tuple[float, float]]:
-        x_range = self.environment_plot.getPlotItem().vb.viewRange()[0]
-        if not x_range or len(x_range) != 2:
-            return None
-        left, right = x_range
-        if left == right:
-            return None
-        if left > right:
-            left, right = right, left
-        return left, right
-
-    def _sampling_x_range(self) -> Optional[Tuple[float, float]]:
-        x_range = self._visible_x_range()
-        if x_range is None:
-            return None
-
-        left, right = x_range
-        width = right - left
-        if width <= 0:
-            return x_range
-
-        margin = width * PLOT_RANGE_MARGIN_RATIO
-        return left - margin, right + margin
-
-    def _window_series(self, x_values: List[float], y_values: List[float]) -> Tuple[List[float], List[float]]:
-        if not x_values or not y_values:
-            return [], []
-
-        x_range = self._sampling_x_range()
-        if x_range is None:
-            return self._downsample_series(x_values, y_values, self._max_plot_points(None))
-
-        left, right = x_range
-        start_index = bisect.bisect_left(x_values, left)
-        end_index = bisect.bisect_right(x_values, right)
-
-        if start_index == end_index:
-            return [], []
-
-        windowed_x = x_values[start_index:end_index]
-        windowed_y = y_values[start_index:end_index]
-        visible_range = self._visible_x_range()
-        visible_width = (visible_range[1] - visible_range[0]) if visible_range is not None else (right - left)
-        return self._downsample_series(windowed_x, windowed_y, self._max_plot_points(visible_width))
-
-    def _time_series_for(self, series: Dict[str, List[float]]) -> List[float]:
-        if self.time_axis_mode == "clock":
-            return series["wall_time"]
-
-        relative_times = series["time"]
-        if not relative_times:
-            return relative_times
-        latest_time = relative_times[-1]
-        return [value - latest_time for value in relative_times]
-
     def refresh_plots(self) -> None:
         environment = self.data_buffers["environment"]
         if not environment["time"]:
             return
 
-        env_time = self._time_series_for(environment)
-        env_x, env_temp = self._window_series(env_time, environment["temp"])
-        _, env_humidity = self._window_series(env_time, environment["humidity"])
-        _, env_pressure = self._window_series(env_time, environment["pressure"])
-        self.temperature_curve.setData(env_x, env_temp)
-        self.humidity_curve.setData(env_x, env_humidity)
-        self.pressure_curve.setData(env_x, env_pressure)
+        latest_elapsed = environment["time"][-1]
+        self.environment_axis.set_reference(latest_elapsed, self.session_start_epoch)
+        self.sensor_axis.set_reference(latest_elapsed, self.session_start_epoch)
+        self._invalidate_time_axes()
+
+        env_x = environment["time"]
+        self.temperature_curve.setData(env_x, environment["temp"])
+        self.humidity_curve.setData(env_x, environment["humidity"])
+        self.pressure_curve.setData(env_x, environment["pressure"])
 
         for idx, curve in enumerate(self.gas_curves):
             gas_trace = self.data_buffers["gas"][idx]
-            gas_x, gas_y = self._window_series(self._time_series_for(gas_trace), gas_trace["value"])
-            curve.setData(gas_x, gas_y)
+            curve.setData(gas_trace["time"], gas_trace["value"])
 
         heater = self.data_buffers["heater"]
-        heater_x, heater_y = self._window_series(self._time_series_for(heater), heater["value"])
-        self.heater_curve.setData(heater_x, heater_y)
+        self.heater_curve.setData(heater["time"], heater["value"])
 
     def _write_csv_header(self) -> None:
         assert self.csv_file is not None
