@@ -5,13 +5,13 @@ PC 側ツール群が含まれています。
 
 ## 構成
 
-- `src/serial_logger.py`: serial 受信と CSV 保存を行う CLI ロガー PoC
 - `main.py`: packaging を意識した GUI エントリポイント
 - `src/gui_app.py`: GUI 実装本体
 - `src/app_metadata.py`: アプリ名とバージョン定数
 - `src/serial_protocol.py`: 共通 serial 解析ヘルパー
-- `pc_logger.pyproject`: Qt project 記述
-- `pysidedeploy.spec`: Qt deployment 設定
+- `pc_logger.pyproject`: `pyside6-deploy` fallback 用の Qt project 記述
+- `poc/serial_logger.py`: 旧 CLI ロガー PoC のアーカイブ
+- `poc/README.md`: PoC アーカイブの説明
 - `requirements.txt`: Python 依存
 - `data/`: 取得ログの既定出力ディレクトリ
 
@@ -31,7 +31,7 @@ Windows で実行ファイル化する場合も、まず同じ `requirements.txt
 ```bash
 cd pc_logger
 source .venv/bin/activate
-python src/serial_logger.py --port /dev/cu.usbmodem4101
+python poc/serial_logger.py --port /dev/cu.usbmodem4101
 ```
 
 ## GUI の起動
@@ -45,7 +45,7 @@ python main.py
 CLI ロガーで利用できるオプション:
 
 ```bash
-python src/serial_logger.py --help
+python poc/serial_logger.py --help
 ```
 
 ## GUI の現在機能
@@ -64,6 +64,7 @@ python src/serial_logger.py --help
 
 ## CLI ロガーの現在動作
 
+- 旧 PoC として `poc/` 配下に保管
 - `115200` baud で受信
 - firmware の `[csv]` 行のみを取得
 - 解析済み行を `data/session_YYYYmmdd_HHMMSS.csv` に保存
