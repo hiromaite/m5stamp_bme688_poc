@@ -219,7 +219,6 @@ bool readMeasurementBatch(struct bme68x_data *data, uint8_t &fieldCount) {
   }
 
   if (fieldCount == 0) {
-    Serial.println("[bme688] no new data available");
     return false;
   }
 
