@@ -56,6 +56,7 @@ CSV_FLUSH_INTERVAL_SECONDS = 5.0
 CSV_FLUSH_ROW_THRESHOLD = 25
 PLOT_REFRESH_INTERVAL_MS = 150
 PLOT_RETENTION_SECONDS = 7 * 60 * 60.0
+EVENT_LOG_MAX_LINES = 1000
 TIME_AXIS_MODES: List[Tuple[str, str]] = [
     ("Relative", "relative"),
     ("Clock", "clock"),
@@ -496,6 +497,7 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_group)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
+        self.log_view.document().setMaximumBlockCount(EVENT_LOG_MAX_LINES)
         log_layout.addWidget(self.log_view)
         left_column.addWidget(log_group, stretch=1)
         root.addLayout(left_column, stretch=1)
