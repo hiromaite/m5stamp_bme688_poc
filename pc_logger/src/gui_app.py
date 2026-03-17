@@ -55,6 +55,7 @@ MAX_PLOT_POINTS_LONG = 800
 CSV_FLUSH_INTERVAL_SECONDS = 5.0
 CSV_FLUSH_ROW_THRESHOLD = 25
 PLOT_REFRESH_INTERVAL_MS = 150
+PLOT_RETENTION_SECONDS = 7 * 60 * 60.0
 TIME_AXIS_MODES: List[Tuple[str, str]] = [
     ("Relative", "relative"),
     ("Clock", "clock"),
@@ -971,6 +972,31 @@ class MainWindow(QMainWindow):
         heater = self.data_buffers["heater"]
         heater["time"].append(elapsed_s)
         heater["value"].append(heater_temp)
+
+        self._prune_plot_history(elapsed_s)
+
+    def _prune_plot_history(self, latest_elapsed: float) -> None:
+        cutoff = latest_elapsed - PLOT_RETENTION_SECONDS
+        if cutoff <= 0:
+            return
+
+        self._prune_series_before(self.data_buffers["environment"], cutoff, ("time", "temp", "humidity", "pressure"))
+        self._prune_series_before(self.data_buffers["heater"], cutoff, ("time", "value"))
+        for gas_trace in self.data_buffers["gas"]:
+            self._prune_series_before(gas_trace, cutoff, ("time", "value"))
+
+    @staticmethod
+    def _prune_series_before(series: Dict[str, List[float]], cutoff: float, keys: Tuple[str, ...]) -> None:
+        time_values = series["time"]
+        prune_count = 0
+        while prune_count < len(time_values) and time_values[prune_count] < cutoff:
+            prune_count += 1
+
+        if prune_count == 0:
+            return
+
+        for key in keys:
+            del series[key][:prune_count]
 
     def _heater_temp_for_step(self, frame_step: int) -> float:
         temp_string = self.profile_state.get("heater_profile_temp_c", "")
