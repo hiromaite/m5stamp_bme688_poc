@@ -389,6 +389,7 @@ class MainWindow(QMainWindow):
         self.record_button = QPushButton("Record")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
+        self.clear_plots_button = QPushButton("Clear Plots")
 
         self.start_segment_button = QPushButton("Start Segment")
         self.end_segment_button = QPushButton("End Segment")
@@ -436,6 +437,7 @@ class MainWindow(QMainWindow):
         segment_buttons.addWidget(self.start_segment_button)
         segment_buttons.addWidget(self.end_segment_button)
         record_layout.addLayout(segment_buttons)
+        record_layout.addWidget(self.clear_plots_button)
 
         profile_group = QGroupBox("Profile")
         profile_layout = QVBoxLayout(profile_group)
@@ -574,6 +576,7 @@ class MainWindow(QMainWindow):
         self.end_segment_button.clicked.connect(self.end_segment)
         self.profile_button.clicked.connect(self.open_profile_dialog)
         self.reset_profile_button.clicked.connect(self.reset_profile)
+        self.clear_plots_button.clicked.connect(self.clear_plots)
 
     def set_plot_span(self, label: str, seconds: Optional[float], checked: bool) -> None:
         if not checked:
@@ -668,6 +671,40 @@ class MainWindow(QMainWindow):
         self.refresh_plots()
         self.plot_dirty = False
 
+    def clear_plots(self) -> None:
+        self.data_buffers = {
+            "environment": {
+                "time": [],
+                "temp": [],
+                "humidity": [],
+                "pressure": [],
+            },
+            "heater": {
+                "time": [],
+                "value": [],
+            },
+            "gas": [{"time": [], "value": []} for _ in range(10)],
+        }
+        self.last_plot_time_ms = None
+        self.session_start_epoch = None
+        self.plot_dirty = False
+
+        self.temperature_curve.setData([], [])
+        self.humidity_curve.setData([], [])
+        self.pressure_curve.setData([], [])
+        for curve in self.gas_curves:
+            curve.setData([], [])
+        self.heater_curve.setData([], [])
+
+        self.environment_plot.enableAutoRange(axis="xy", enable=True)
+        self.sensor_plot.enableAutoRange(axis="xy", enable=True)
+        self.environment_pressure_view.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+        self.sensor_heater_view.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+        self.environment_axis.set_reference(0.0, None)
+        self.sensor_axis.set_reference(0.0, None)
+        self._invalidate_time_axes()
+        self.log("Plot traces cleared")
+
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_view.appendPlainText(f"[{timestamp}] {message}")
@@ -752,6 +789,7 @@ class MainWindow(QMainWindow):
         self.port_combo.setEnabled(not connected)
         self.disconnect_button.setEnabled(connected)
         self.record_button.setEnabled(connected and not self.is_recording)
+        self.clear_plots_button.setEnabled(not self.is_recording)
         self.start_segment_button.setEnabled(connected and self.is_recording and self.current_segment is None)
         self.end_segment_button.setEnabled(connected and self.is_recording and self.current_segment is not None)
         self.profile_button.setEnabled(connected and not self.is_recording)
@@ -786,6 +824,7 @@ class MainWindow(QMainWindow):
         self.is_recording = True
         self.record_button.setEnabled(False)
         self.stop_button.setEnabled(True)
+        self.clear_plots_button.setEnabled(False)
         self.start_segment_button.setEnabled(True)
         self.profile_button.setEnabled(False)
         self._set_sleep_prevention(True)
@@ -798,6 +837,7 @@ class MainWindow(QMainWindow):
         self.is_recording = False
         self.record_button.setEnabled(self.is_connected)
         self.stop_button.setEnabled(False)
+        self.clear_plots_button.setEnabled(True)
         self.start_segment_button.setEnabled(False)
         self.end_segment_button.setEnabled(False)
         self.profile_button.setEnabled(self.is_connected)
