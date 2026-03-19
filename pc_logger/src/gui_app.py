@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import math
 import os
 import sys
 import time
@@ -15,6 +16,7 @@ import pyqtgraph as pg
 import serial
 from PySide6 import __file__ as PYSIDE6_FILE
 from PySide6.QtCore import QCoreApplication, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QBrush, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -30,6 +32,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QGraphicsDropShadowEffect,
+    QGraphicsRectItem,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -99,7 +103,9 @@ class SegmentState:
     label: str
     target_ppm: str
     start_iso: str
+    start_elapsed: float
     end_iso: str = ""
+    end_elapsed: Optional[float] = None
 
 
 class TimeAxisItem(pg.AxisItem):
@@ -364,10 +370,15 @@ class MainWindow(QMainWindow):
         self.last_plot_time_ms = None
         self.last_pong_iso = ""
         self.selected_span_seconds: Optional[float] = None
+        self.selected_span_label: Optional[str] = "All"
         self.time_axis_mode = "relative"
         self.last_selected_port = ""
         self.session_start_epoch: Optional[float] = None
         self.plot_dirty = False
+        self._suppress_span_reset_until = 0.0
+        self.completed_segments: List[SegmentState] = []
+        self.segment_band_items: List[QGraphicsRectItem] = []
+        self.recording_glow_phase = 0.0
 
         self._build_ui()
         self._setup_plots()
@@ -381,6 +392,10 @@ class MainWindow(QMainWindow):
         self.csv_flush_timer = QTimer(self)
         self.csv_flush_timer.setSingleShot(True)
         self.csv_flush_timer.timeout.connect(self._flush_csv)
+
+        self.recording_glow_timer = QTimer(self)
+        self.recording_glow_timer.timeout.connect(self._advance_recording_indicator)
+        self.recording_glow_timer.setInterval(120)
         QTimer.singleShot(0, self._notify_partial_recordings)
 
     def _build_ui(self) -> None:
@@ -443,8 +458,9 @@ class MainWindow(QMainWindow):
         metadata_layout.addRow("Segment Label", self.label_edit)
         metadata_layout.addRow("Target ppm", self.target_ppm_edit)
 
-        record_group = QGroupBox("Recording")
-        record_layout = QVBoxLayout(record_group)
+        self.record_group = QGroupBox("Recording")
+        self.record_group.setObjectName("recordingGroup")
+        record_layout = QVBoxLayout(self.record_group)
         record_buttons = QHBoxLayout()
         record_buttons.addWidget(self.record_button)
         record_buttons.addWidget(self.stop_button)
@@ -469,7 +485,7 @@ class MainWindow(QMainWindow):
 
         controls_layout.addWidget(connection_group)
         controls_layout.addWidget(metadata_group)
-        controls_layout.addWidget(record_group)
+        controls_layout.addWidget(self.record_group)
         controls_layout.addWidget(profile_group)
         controls_layout.addWidget(status_group)
 
@@ -576,6 +592,7 @@ class MainWindow(QMainWindow):
             sensor_plot_item.legend.addItem(self.heater_curve, "Heater C")
         sensor_plot_item.vb.sigResized.connect(self._sync_sensor_axes)
         sensor_plot_item.vb.sigXRangeChanged.connect(self._handle_plot_x_range_changed)
+        sensor_plot_item.vb.sigYRangeChanged.connect(self._handle_sensor_y_range_changed)
 
         for curve in (self.temperature_curve, self.humidity_curve, self.pressure_curve, self.heater_curve):
             curve.setClipToView(True)
@@ -587,7 +604,7 @@ class MainWindow(QMainWindow):
         self.connect_button.clicked.connect(self.connect_serial)
         self.disconnect_button.clicked.connect(self.disconnect_serial)
         self.record_button.clicked.connect(self.start_recording)
-        self.stop_button.clicked.connect(self.stop_recording)
+        self.stop_button.clicked.connect(self.request_stop_recording)
         self.start_segment_button.clicked.connect(self.start_segment)
         self.end_segment_button.clicked.connect(self.end_segment)
         self.profile_button.clicked.connect(self.open_profile_dialog)
@@ -602,8 +619,10 @@ class MainWindow(QMainWindow):
         for other_label, button in self.span_buttons.items():
             button.setChecked(other_label == label)
 
+        self.selected_span_label = label
         self.selected_span_seconds = seconds
         self.log(f"Plot span set to {label}")
+        self._suppress_span_reset_until = time.monotonic() + 0.25
         self._apply_plot_span()
         self.refresh_plots()
 
@@ -679,7 +698,15 @@ class MainWindow(QMainWindow):
             axis.update()
 
     def _handle_plot_x_range_changed(self, *_args) -> None:
+        if time.monotonic() >= self._suppress_span_reset_until and self.selected_span_label is not None:
+            for button in self.span_buttons.values():
+                button.setChecked(False)
+            self.selected_span_label = None
+            self.selected_span_seconds = None
         self._invalidate_time_axes()
+
+    def _handle_sensor_y_range_changed(self, *_args) -> None:
+        self._update_segment_bands()
 
     def _refresh_plots_if_dirty(self) -> None:
         if not self.plot_dirty:
@@ -704,6 +731,8 @@ class MainWindow(QMainWindow):
         self.last_plot_time_ms = None
         self.session_start_epoch = None
         self.plot_dirty = False
+        self.completed_segments = []
+        self._clear_segment_bands()
 
         self.temperature_curve.setData([], [])
         self.humidity_curve.setData([], [])
@@ -720,6 +749,12 @@ class MainWindow(QMainWindow):
         self.sensor_axis.set_reference(0.0, None)
         self._invalidate_time_axes()
         self.log("Plot traces cleared")
+
+    def _latest_elapsed(self) -> float:
+        environment = self.data_buffers["environment"]
+        if environment["time"]:
+            return float(environment["time"][-1])
+        return 0.0
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -814,7 +849,7 @@ class MainWindow(QMainWindow):
         self.end_segment_button.setEnabled(connected and self.is_recording and self.current_segment is not None)
         self.profile_button.setEnabled(connected and not self.is_recording)
         self.reset_profile_button.setEnabled(connected and not self.is_recording)
-        self.status_label.setText(f"Connected: {port}" if connected else "Disconnected")
+        self._update_status_label(port if connected else "")
         self._update_sleep_prevention_state()
         if connected and self.worker:
             self.send_command("GET_PROFILE")
@@ -850,7 +885,24 @@ class MainWindow(QMainWindow):
         self.start_segment_button.setEnabled(True)
         self.profile_button.setEnabled(False)
         self._update_sleep_prevention_state()
+        self._set_recording_indicator_active(True)
+        self._update_status_label(self.port_combo.currentText())
         self.log(f"Recording started: {self.recording_path}")
+
+    def request_stop_recording(self) -> None:
+        if not self.is_recording:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Stop Recording",
+            "現在の記録を停止しますか？\n\n記録は現在の CSV に確定保存されます。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.stop_recording()
 
     def stop_recording(self) -> None:
         if self.current_segment:
@@ -865,6 +917,8 @@ class MainWindow(QMainWindow):
         self.profile_button.setEnabled(self.is_connected)
         self.reset_profile_button.setEnabled(self.is_connected)
         self._update_sleep_prevention_state()
+        self._set_recording_indicator_active(False)
+        self._update_status_label(self.port_combo.currentText() if self.is_connected else "")
 
         self._flush_csv(force=True)
         self.csv_flush_timer.stop()
@@ -891,9 +945,11 @@ class MainWindow(QMainWindow):
             label=self.label_edit.text().strip() or "unlabeled",
             target_ppm=self.target_ppm_edit.text().strip() or "",
             start_iso=datetime.now().isoformat(timespec="seconds"),
+            start_elapsed=self._latest_elapsed(),
         )
         self.start_segment_button.setEnabled(False)
         self.end_segment_button.setEnabled(True)
+        self._update_segment_bands()
         self.log(
             f"Segment started: {self.current_segment.segment_id} "
             f"label={self.current_segment.label} target_ppm={self.current_segment.target_ppm}"
@@ -904,10 +960,13 @@ class MainWindow(QMainWindow):
             return
 
         self.current_segment.end_iso = datetime.now().isoformat(timespec="seconds")
+        self.current_segment.end_elapsed = self._latest_elapsed()
         self.log(f"Segment ended: {self.current_segment.segment_id}")
+        self.completed_segments.append(self.current_segment)
         self.current_segment = None
         self.start_segment_button.setEnabled(self.is_recording)
         self.end_segment_button.setEnabled(False)
+        self._update_segment_bands()
 
     def open_profile_dialog(self) -> None:
         dialog = ProfileDialog(self, self.profile_state)
@@ -1126,6 +1185,7 @@ class MainWindow(QMainWindow):
 
         heater = self.data_buffers["heater"]
         self.heater_curve.setData(heater["time"], heater["value"])
+        self._update_segment_bands()
 
     def _write_csv_header(self) -> None:
         assert self.csv_file is not None
@@ -1164,6 +1224,125 @@ class MainWindow(QMainWindow):
     def _update_sleep_prevention_state(self) -> None:
         self._set_sleep_prevention(self.is_connected or self.is_recording)
 
+    def _update_status_label(self, port: str) -> None:
+        if not self.is_connected:
+            self.status_label.setText("Disconnected")
+            return
+
+        status = f"Connected: {port}"
+        if self.is_recording:
+            status += " | RECORDING"
+        self.status_label.setText(status)
+
+    def _set_recording_indicator_active(self, active: bool) -> None:
+        if active:
+            if not hasattr(self, "recording_glow_effect"):
+                effect = QGraphicsDropShadowEffect(self.record_group)
+                effect.setOffset(0, 0)
+                self.recording_glow_effect = effect
+                self.record_group.setGraphicsEffect(effect)
+            self.recording_glow_phase = 0.0
+            self.recording_glow_timer.start()
+            self._apply_recording_indicator_style(0.5)
+            return
+
+        self.recording_glow_timer.stop()
+        self.record_group.setStyleSheet("")
+        if hasattr(self, "recording_glow_effect"):
+            self.recording_glow_effect.setBlurRadius(0)
+            self.recording_glow_effect.setColor(QColor(0, 0, 0, 0))
+
+    def _advance_recording_indicator(self) -> None:
+        self.recording_glow_phase += 0.28
+        intensity = (math.sin(self.recording_glow_phase) + 1.0) / 2.0
+        self._apply_recording_indicator_style(intensity)
+
+    def _apply_recording_indicator_style(self, intensity: float) -> None:
+        border_alpha = int(120 + intensity * 110)
+        fill_alpha = int(18 + intensity * 24)
+        title_alpha = int(180 + intensity * 60)
+        self.record_group.setStyleSheet(
+            f"""
+            QGroupBox#recordingGroup {{
+                border: 2px solid rgba(255, 80, 80, {border_alpha});
+                border-radius: 10px;
+                margin-top: 12px;
+                background-color: rgba(255, 80, 80, {fill_alpha});
+            }}
+            QGroupBox#recordingGroup::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: rgba(255, 96, 96, {title_alpha});
+                font-weight: 700;
+            }}
+            """
+        )
+        if hasattr(self, "recording_glow_effect"):
+            color = QColor(255, 80, 80, int(48 + intensity * 80))
+            self.recording_glow_effect.setColor(color)
+            self.recording_glow_effect.setBlurRadius(20 + intensity * 20)
+
+    def _clear_segment_bands(self) -> None:
+        for item in self.segment_band_items:
+            try:
+                self.sensor_plot.removeItem(item)
+            except Exception:
+                pass
+        self.segment_band_items.clear()
+
+    def _update_segment_bands(self) -> None:
+        self._clear_segment_bands()
+
+        y_range = self.sensor_plot.getPlotItem().vb.viewRange()[1]
+        if not y_range or len(y_range) != 2:
+            return
+
+        y_min, y_max = y_range
+        span = y_max - y_min
+        if span <= 0:
+            return
+
+        band_height = span * 0.10
+        band_y = y_max - band_height
+        segments = list(self.completed_segments)
+        if self.current_segment is not None:
+            active_segment = SegmentState(
+                segment_id=self.current_segment.segment_id,
+                label=self.current_segment.label,
+                target_ppm=self.current_segment.target_ppm,
+                start_iso=self.current_segment.start_iso,
+                start_elapsed=self.current_segment.start_elapsed,
+                end_iso=self.current_segment.end_iso,
+                end_elapsed=self._latest_elapsed(),
+            )
+            segments.append(active_segment)
+
+        if not segments:
+            return
+
+        palette = [
+            QColor(239, 68, 68, 55),
+            QColor(245, 158, 11, 55),
+            QColor(16, 185, 129, 55),
+            QColor(59, 130, 246, 55),
+            QColor(168, 85, 247, 55),
+        ]
+
+        for index, segment in enumerate(segments):
+            start_x = segment.start_elapsed
+            end_x = segment.end_elapsed if segment.end_elapsed is not None else self._latest_elapsed()
+            width = max(0.001, end_x - start_x)
+            item = QGraphicsRectItem(start_x, band_y, width, band_height)
+            item.setPen(QPen(Qt.NoPen))
+            item.setBrush(QBrush(palette[index % len(palette)]))
+            item.setZValue(-5)
+            item.setToolTip(
+                f"{segment.segment_id}\nlabel={segment.label}\ntarget_ppm={segment.target_ppm or '-'}"
+            )
+            self.sensor_plot.addItem(item, ignoreBounds=True)
+            self.segment_band_items.append(item)
+
     @staticmethod
     def _recording_directory() -> Path:
         return Path("data")
@@ -1194,6 +1373,22 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.is_recording:
+            message = "記録中です。記録を停止してアプリを終了しますか？"
+        else:
+            message = "GUI アプリを終了しますか？"
+
+        answer = QMessageBox.question(
+            self,
+            "Exit Application",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            event.ignore()
+            return
+
         if self.is_recording:
             self.stop_recording()
         self.disconnect_serial()
