@@ -20,6 +20,8 @@
   - `poc/` 配下に旧 CLI ロガーをアーカイブ
 - `docs/requirements_v1.md`
   - 承認済みのシステム要件ベースライン
+- `docs/next_version_backlog.md`
+  - 次版以降の開発計画とバックログ
 
 ## 現在のベースライン
 
@@ -84,3 +86,8 @@ dist/bme688_logger.exe
 
 Windows 配布に向けた準備はこのリポジトリ内で進めています。現在の
 Windows ビルドメモは [docs/windows_build.md](docs/windows_build.md) にあります。
+
+## 今後の計画
+
+次版以降の機能計画、UX 改善、後続リファクタの方針は
+[docs/next_version_backlog.md](docs/next_version_backlog.md) に整理しています。
