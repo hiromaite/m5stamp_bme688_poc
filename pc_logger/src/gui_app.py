@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import json
 import math
 import os
 import sys
@@ -15,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import pyqtgraph as pg
 import serial
 from PySide6 import __file__ as PYSIDE6_FILE
-from PySide6.QtCore import QCoreApplication, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QStandardPaths, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,13 +35,14 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QGraphicsDropShadowEffect,
     QGraphicsRectItem,
+    QInputDialog,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 from serial.tools import list_ports
 
-from app_metadata import APP_NAME, APP_VERSION
+from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 
 
@@ -67,6 +69,7 @@ TIME_AXIS_MODES: List[Tuple[str, str]] = [
     ("Relative", "relative"),
     ("Clock", "clock"),
 ]
+PROFILE_PRESETS_FILENAME = "heater_profile_presets.json"
 
 
 def configure_qt_runtime() -> None:
@@ -354,6 +357,7 @@ class MainWindow(QMainWindow):
             "heater_profile_duration_mult": "",
             "heater_profile_time_base_ms": "",
         }
+        self.profile_presets: Dict[str, Dict[str, str]] = {}
         self.data_buffers = {
             "environment": {
                 "time": [],
@@ -383,6 +387,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._setup_plots()
         self._wire_events()
+        self._load_profile_presets()
         self.refresh_ports()
 
         self.plot_timer = QTimer(self)
@@ -429,8 +434,14 @@ class MainWindow(QMainWindow):
 
         self.profile_button = QPushButton("Profile Settings")
         self.reset_profile_button = QPushButton("Reset Profile")
+        self.save_preset_button = QPushButton("Save Preset")
+        self.load_preset_button = QPushButton("Load Preset")
         self.profile_button.setEnabled(False)
         self.reset_profile_button.setEnabled(False)
+        self.save_preset_button.setEnabled(False)
+        self.load_preset_button.setEnabled(False)
+        self.profile_preset_combo = QComboBox()
+        self.profile_preset_combo.setPlaceholderText("Saved presets")
 
         self.label_edit = QLineEdit("air_baseline")
         self.target_ppm_edit = QLineEdit("0")
@@ -477,6 +488,11 @@ class MainWindow(QMainWindow):
         profile_buttons.addWidget(self.profile_button)
         profile_buttons.addWidget(self.reset_profile_button)
         profile_layout.addLayout(profile_buttons)
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(self.profile_preset_combo, stretch=1)
+        preset_row.addWidget(self.load_preset_button)
+        preset_row.addWidget(self.save_preset_button)
+        profile_layout.addLayout(preset_row)
         profile_layout.addWidget(self.profile_label)
 
         status_group = QGroupBox("Status")
@@ -609,6 +625,8 @@ class MainWindow(QMainWindow):
         self.end_segment_button.clicked.connect(self.end_segment)
         self.profile_button.clicked.connect(self.open_profile_dialog)
         self.reset_profile_button.clicked.connect(self.reset_profile)
+        self.save_preset_button.clicked.connect(self.save_current_profile_as_preset)
+        self.load_preset_button.clicked.connect(self.load_selected_profile_preset)
         self.clear_plots_button.clicked.connect(self.clear_plots)
 
     def set_plot_span(self, label: str, seconds: Optional[float], checked: bool) -> None:
@@ -849,6 +867,8 @@ class MainWindow(QMainWindow):
         self.end_segment_button.setEnabled(connected and self.is_recording and self.current_segment is not None)
         self.profile_button.setEnabled(connected and not self.is_recording)
         self.reset_profile_button.setEnabled(connected and not self.is_recording)
+        self.save_preset_button.setEnabled(connected and not self.is_recording)
+        self.load_preset_button.setEnabled(connected and not self.is_recording and self.profile_preset_combo.count() > 0)
         self._update_status_label(port if connected else "")
         self._update_sleep_prevention_state()
         if connected and self.worker:
@@ -884,6 +904,8 @@ class MainWindow(QMainWindow):
         self.clear_plots_button.setEnabled(False)
         self.start_segment_button.setEnabled(True)
         self.profile_button.setEnabled(False)
+        self.save_preset_button.setEnabled(False)
+        self.load_preset_button.setEnabled(False)
         self._update_sleep_prevention_state()
         self._set_recording_indicator_active(True)
         self._update_status_label(self.port_combo.currentText())
@@ -916,6 +938,8 @@ class MainWindow(QMainWindow):
         self.end_segment_button.setEnabled(False)
         self.profile_button.setEnabled(self.is_connected)
         self.reset_profile_button.setEnabled(self.is_connected)
+        self.save_preset_button.setEnabled(self.is_connected)
+        self.load_preset_button.setEnabled(self.is_connected and self.profile_preset_combo.count() > 0)
         self._update_sleep_prevention_state()
         self._set_recording_indicator_active(False)
         self._update_status_label(self.port_combo.currentText() if self.is_connected else "")
@@ -982,6 +1006,71 @@ class MainWindow(QMainWindow):
         self.send_command("RESET_PROFILE")
         self.log("Profile reset command sent")
 
+    @staticmethod
+    def _normalized_profile_state(profile: Dict[str, str]) -> Dict[str, str]:
+        temps = profile.get("heater_profile_temp_c", "").strip()
+        durations = profile.get("heater_profile_duration_mult", "").strip()
+        time_base_ms = profile.get("heater_profile_time_base_ms", "").strip()
+        profile_len = profile.get("profile_len", "").strip()
+        if not profile_len and temps:
+            profile_len = str(len([part for part in temps.split(",") if part.strip()]))
+        return {
+            "heater_profile_temp_c": temps,
+            "heater_profile_duration_mult": durations,
+            "heater_profile_time_base_ms": time_base_ms,
+            "profile_len": profile_len,
+        }
+
+    @classmethod
+    def _profile_state_to_command(cls, profile: Dict[str, str]) -> str:
+        normalized = cls._normalized_profile_state(profile)
+        return (
+            f"SET_PROFILE temp={normalized['heater_profile_temp_c']} "
+            f"dur={normalized['heater_profile_duration_mult']} "
+            f"base_ms={normalized['heater_profile_time_base_ms']}"
+        )
+
+    def save_current_profile_as_preset(self) -> None:
+        normalized = self._normalized_profile_state(self.profile_state)
+        if not normalized["heater_profile_temp_c"] or not normalized["heater_profile_duration_mult"] or not normalized["heater_profile_time_base_ms"]:
+            QMessageBox.warning(self, "No Profile", "保存するヒータープロファイルがまだ取得できていません。")
+            return
+
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save Preset",
+            "プリセット名を入力してください。",
+            text=self.profile_preset_combo.currentText().strip(),
+        )
+        if not accepted:
+            return
+
+        preset_name = name.strip()
+        if not preset_name:
+            QMessageBox.warning(self, "Invalid Name", "プリセット名を入力してください。")
+            return
+
+        self.profile_presets[preset_name] = normalized
+        self._save_profile_presets()
+        self._refresh_profile_preset_combo(selected_name=preset_name)
+        self.log(f"Profile preset saved: {preset_name}")
+
+    def load_selected_profile_preset(self) -> None:
+        preset_name = self.profile_preset_combo.currentText().strip()
+        if not preset_name:
+            QMessageBox.warning(self, "No Preset", "読み込むプリセットを選択してください。")
+            return
+
+        preset = self.profile_presets.get(preset_name)
+        if not preset:
+            QMessageBox.warning(self, "Missing Preset", f"プリセット '{preset_name}' が見つかりません。")
+            return
+
+        self.profile_state.update(preset)
+        self.update_profile_label()
+        self.send_command(self._profile_state_to_command(preset))
+        self.log(f"Profile preset loaded: {preset_name}")
+
     def send_command(self, command: str) -> None:
         if not self.worker:
             self.log(f"Command skipped while disconnected: {command}")
@@ -993,6 +1082,65 @@ class MainWindow(QMainWindow):
         temp = self.profile_state.get("heater_profile_temp_c", "")
         base_ms = self.profile_state.get("heater_profile_time_base_ms", "")
         self.profile_label.setText(f"Profile: {profile_id} | base_ms={base_ms} | temp={temp}")
+
+    def _config_directory(self) -> Path:
+        config_dir = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
+        if config_dir:
+            return Path(config_dir)
+        return Path.home() / ".bme688_logger"
+
+    def _profile_preset_path(self) -> Path:
+        return self._config_directory() / PROFILE_PRESETS_FILENAME
+
+    def _load_profile_presets(self) -> None:
+        preset_path = self._profile_preset_path()
+        if not preset_path.exists():
+            self._refresh_profile_preset_combo()
+            return
+
+        try:
+            raw = json.loads(preset_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            self.log(f"Failed to load profile presets: {exc}")
+            self._refresh_profile_preset_combo()
+            return
+
+        presets = raw.get("presets", {})
+        if not isinstance(presets, dict):
+            self._refresh_profile_preset_combo()
+            return
+
+        loaded: Dict[str, Dict[str, str]] = {}
+        for name, preset in presets.items():
+            if not isinstance(name, str) or not isinstance(preset, dict):
+                continue
+            loaded[name] = self._normalized_profile_state({key: str(value) for key, value in preset.items()})
+
+        self.profile_presets = loaded
+        self._refresh_profile_preset_combo()
+
+    def _save_profile_presets(self) -> None:
+        preset_path = self._profile_preset_path()
+        preset_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "format": "heater_profile_presets_v1",
+            "updated_at_iso": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "presets": self.profile_presets,
+        }
+        temp_path = preset_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(preset_path)
+
+    def _refresh_profile_preset_combo(self, selected_name: str = "") -> None:
+        current = selected_name or self.profile_preset_combo.currentText().strip()
+        self.profile_preset_combo.blockSignals(True)
+        self.profile_preset_combo.clear()
+        names = sorted(self.profile_presets.keys(), key=str.casefold)
+        self.profile_preset_combo.addItems(names)
+        if current and current in self.profile_presets:
+            self.profile_preset_combo.setCurrentText(current)
+        self.profile_preset_combo.blockSignals(False)
+        self.load_preset_button.setEnabled(self.is_connected and not self.is_recording and bool(names))
 
     def _handle_status_line(self, payload: Dict[str, str], raw_line: str) -> None:
         if "pong" in payload:
@@ -1398,9 +1546,14 @@ class MainWindow(QMainWindow):
 def main() -> int:
     configure_qt_runtime()
     app = QApplication(sys.argv)
-    window = MainWindow()
+    app.setApplicationName(APP_ID)
+    window = create_main_window()
     window.show()
     return app.exec()
+
+
+def create_main_window() -> MainWindow:
+    return MainWindow()
 
 
 if __name__ == "__main__":
