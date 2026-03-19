@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Event
 from typing import Dict, List, Optional, Tuple
 
 import pyqtgraph as pg
@@ -54,6 +55,7 @@ MAX_PLOT_POINTS_MEDIUM = 1200
 MAX_PLOT_POINTS_LONG = 800
 CSV_FLUSH_INTERVAL_SECONDS = 5.0
 CSV_FLUSH_ROW_THRESHOLD = 25
+CSV_FLUSH_TIMER_INTERVAL_MS = 250
 PLOT_REFRESH_INTERVAL_MS = 150
 PLOT_RETENTION_SECONDS = 7 * 60 * 60.0
 EVENT_LOG_MAX_LINES = 1000
@@ -143,15 +145,17 @@ class SerialWorker(QThread):
         self._port = port
         self._baudrate = baudrate
         self._timeout = timeout
-        self._running = True
+        self._stop_requested = Event()
         self._serial: Optional[serial.Serial] = None
 
     def run(self) -> None:
         try:
-            self._serial = serial.Serial(self._port, self._baudrate, timeout=self._timeout)
+            self._serial = serial.Serial(self._port, self._baudrate, timeout=self._timeout, write_timeout=self._timeout)
             self.connection_changed.emit(True, self._port)
-            while self._running and self._serial:
+            while not self._stop_requested.is_set() and self._serial:
                 line_bytes = self._serial.readline()
+                if self._stop_requested.is_set():
+                    break
                 if not line_bytes:
                     continue
                 line = line_bytes.decode("utf-8", errors="replace").strip()
@@ -168,10 +172,16 @@ class SerialWorker(QThread):
             self.connection_changed.emit(False, self._port)
 
     def stop(self) -> None:
-        self._running = False
+        self._stop_requested.set()
+        if not self._serial or not self._serial.is_open:
+            return
+        try:
+            self._serial.cancel_read()
+        except (AttributeError, serial.SerialException):
+            pass
 
     def send_command(self, command: str) -> None:
-        if not self._serial or not self._serial.is_open:
+        if self._stop_requested.is_set() or not self._serial or not self._serial.is_open:
             return
         self._serial.write((command.strip() + "\n").encode("utf-8"))
         self._serial.flush()
@@ -327,6 +337,7 @@ class MainWindow(QMainWindow):
         self.current_segment: Optional[SegmentState] = None
         self.segment_counter = 0
         self.recording_path: Optional[Path] = None
+        self.recording_temp_path: Optional[Path] = None
         self.csv_file = None
         self.csv_writer = None
         self.pending_csv_rows = 0
@@ -366,6 +377,11 @@ class MainWindow(QMainWindow):
         self.plot_timer = QTimer(self)
         self.plot_timer.timeout.connect(self._refresh_plots_if_dirty)
         self.plot_timer.start(PLOT_REFRESH_INTERVAL_MS)
+
+        self.csv_flush_timer = QTimer(self)
+        self.csv_flush_timer.setSingleShot(True)
+        self.csv_flush_timer.timeout.connect(self._flush_csv)
+        QTimer.singleShot(0, self._notify_partial_recordings)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -777,9 +793,13 @@ class MainWindow(QMainWindow):
 
     def disconnect_serial(self) -> None:
         if self.worker:
-            self.worker.stop()
-            self.worker.wait(1500)
+            worker = self.worker
             self.worker = None
+            worker.stop()
+            if not worker.wait(1500):
+                self.log("Timed out while stopping the serial worker")
+                self.handle_connection_changed(False, self.port_combo.currentText())
+            return
         self.handle_connection_changed(False, self.port_combo.currentText())
 
     def handle_connection_changed(self, connected: bool, port: str) -> None:
@@ -795,6 +815,7 @@ class MainWindow(QMainWindow):
         self.profile_button.setEnabled(connected and not self.is_recording)
         self.reset_profile_button.setEnabled(connected and not self.is_recording)
         self.status_label.setText(f"Connected: {port}" if connected else "Disconnected")
+        self._update_sleep_prevention_state()
         if connected and self.worker:
             self.send_command("GET_PROFILE")
             self.send_command("PING")
@@ -806,11 +827,12 @@ class MainWindow(QMainWindow):
         self.disconnect_serial()
 
     def start_recording(self) -> None:
-        output_dir = Path("data")
+        output_dir = self._recording_directory()
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("session_%Y%m%d_%H%M%S.csv")
         self.recording_path = output_dir / timestamp
-        self.csv_file = self.recording_path.open("w", newline="", encoding="utf-8")
+        self.recording_temp_path = self.recording_path.with_suffix(".partial.csv")
+        self.csv_file = self.recording_temp_path.open("w", newline="", encoding="utf-8")
         self._write_csv_header()
         self.csv_writer = csv.DictWriter(
             self.csv_file,
@@ -827,7 +849,7 @@ class MainWindow(QMainWindow):
         self.clear_plots_button.setEnabled(False)
         self.start_segment_button.setEnabled(True)
         self.profile_button.setEnabled(False)
-        self._set_sleep_prevention(True)
+        self._update_sleep_prevention_state()
         self.log(f"Recording started: {self.recording_path}")
 
     def stop_recording(self) -> None:
@@ -842,14 +864,21 @@ class MainWindow(QMainWindow):
         self.end_segment_button.setEnabled(False)
         self.profile_button.setEnabled(self.is_connected)
         self.reset_profile_button.setEnabled(self.is_connected)
-        self._set_sleep_prevention(False)
+        self._update_sleep_prevention_state()
 
         self._flush_csv(force=True)
+        self.csv_flush_timer.stop()
         if self.csv_file:
             self.csv_file.close()
         self.csv_file = None
         self.csv_writer = None
         self.pending_csv_rows = 0
+        if self.recording_temp_path and self.recording_path:
+            try:
+                self.recording_temp_path.replace(self.recording_path)
+            except OSError as exc:
+                self.log(f"Failed to finalize recording file: {exc}")
+        self.recording_temp_path = None
         self.log(f"Recording stopped: {self.recording_path}")
 
     def start_segment(self) -> None:
@@ -988,7 +1017,7 @@ class MainWindow(QMainWindow):
             }
             self.csv_writer.writerow(export_row)
             self.pending_csv_rows += 1
-            self._flush_csv()
+            self._schedule_csv_flush()
 
     def _append_plot_data(self, payload: Dict[str, str]) -> None:
         host_ms = float(payload["host_ms"])
@@ -1059,11 +1088,22 @@ class MainWindow(QMainWindow):
         should_flush = should_flush or (self.pending_csv_rows > 0 and now - self.last_csv_flush_at >= CSV_FLUSH_INTERVAL_SECONDS)
 
         if not should_flush:
+            if self.pending_csv_rows > 0 and not self.csv_flush_timer.isActive():
+                self.csv_flush_timer.start(CSV_FLUSH_TIMER_INTERVAL_MS)
             return
 
         self.csv_file.flush()
         self.pending_csv_rows = 0
         self.last_csv_flush_at = now
+
+    def _schedule_csv_flush(self) -> None:
+        if not self.csv_file:
+            return
+        if self.pending_csv_rows >= CSV_FLUSH_ROW_THRESHOLD:
+            self._flush_csv(force=True)
+            return
+        if self.csv_file and self.pending_csv_rows > 0 and not self.csv_flush_timer.isActive():
+            self.csv_flush_timer.start(CSV_FLUSH_TIMER_INTERVAL_MS)
 
     def refresh_plots(self) -> None:
         environment = self.data_buffers["environment"]
@@ -1120,6 +1160,38 @@ class MainWindow(QMainWindow):
         if active:
             flags |= WINDOWS_ES_SYSTEM_REQUIRED | WINDOWS_ES_DISPLAY_REQUIRED
         ctypes.windll.kernel32.SetThreadExecutionState(flags)
+
+    def _update_sleep_prevention_state(self) -> None:
+        self._set_sleep_prevention(self.is_connected or self.is_recording)
+
+    @staticmethod
+    def _recording_directory() -> Path:
+        return Path("data")
+
+    def _find_partial_recordings(self) -> List[Path]:
+        data_dir = self._recording_directory()
+        if not data_dir.exists():
+            return []
+        return sorted(data_dir.glob("*.partial.csv"))
+
+    def _notify_partial_recordings(self) -> None:
+        partials = self._find_partial_recordings()
+        if not partials:
+            return
+
+        preview = "\n".join(f"- {path.name}" for path in partials[:5])
+        if len(partials) > 5:
+            preview += f"\n- ... and {len(partials) - 5} more"
+
+        self.log(f"Found {len(partials)} incomplete recording file(s)")
+        QMessageBox.warning(
+            self,
+            "Recovered Partial Sessions",
+            "前回の終了が正常でなかった可能性があります。未完了の記録ファイルを検出しました。\n\n"
+            "これらのファイルは `data/` 配下に `.partial.csv` として残っています。\n"
+            "必要に応じて内容を確認してください。\n\n"
+            f"{preview}",
+        )
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.is_recording:
