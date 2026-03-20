@@ -89,6 +89,8 @@ dist/bme688_logger/bme688_logger.exe
 
 Windows 配布に向けた準備はこのリポジトリ内で進めています。現在の
 Windows ビルドメモは [docs/windows_build.md](docs/windows_build.md) にあります。
+Windows 試験ユーザー向けの GUI 利用手順は
+[docs/windows_gui_user_guide.md](docs/windows_gui_user_guide.md) を参照してください。
 
 ## 今後の計画
 

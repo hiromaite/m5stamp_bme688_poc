@@ -106,3 +106,5 @@ fallback:
 - `pyside6-deploy`
 
 現在の Windows ビルドメモは [../docs/windows_build.md](../docs/windows_build.md) を参照してください。
+Windows 試験ユーザー向けの操作説明は
+[../docs/windows_gui_user_guide.md](../docs/windows_gui_user_guide.md) を参照してください。
