@@ -57,10 +57,12 @@ python poc/serial_logger.py --help
 - `Start Segment` / `End Segment`
 - 現在のヒータープロファイル表示
 - 可変長ヒータープロファイル編集（`1..10` ステップ）
+- 名前付きヒータープロファイルプリセットの保存 / 読込
 - profile reset
 - 環境データのライブプロット
 - ガス抵抗値とヒーター温度のライブプロット
 - 表示スパン切り替え
+- 起動時スプラッシュ
 
 ## CLI ロガーの現在動作
 
@@ -97,10 +99,12 @@ GUI が現在解釈できる行ファミリ:
 主経路:
 
 - `PyInstaller`
-- `main.spec` を使った `--onefile` パッケージング
+- `main.spec` を使った `onedir` パッケージング
 
 fallback:
 
 - `pyside6-deploy`
 
 現在の Windows ビルドメモは [../docs/windows_build.md](../docs/windows_build.md) を参照してください。
+Windows 試験ユーザー向けの操作説明は
+[../docs/windows_gui_user_guide.md](../docs/windows_gui_user_guide.md) を参照してください。
