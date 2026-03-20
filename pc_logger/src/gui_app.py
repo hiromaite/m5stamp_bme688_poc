@@ -44,7 +44,14 @@ from serial.tools import list_ports
 
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
-from stability_analyzer import StabilityConfig, StabilitySnapshot, analyze_gas_stability
+from stability_analyzer import (
+    STABILITY_STATE_STABLE,
+    STABILITY_STATE_UNKNOWN,
+    STABILITY_STATE_UNSTABLE,
+    StabilityConfig,
+    StabilitySnapshot,
+    analyze_gas_stability,
+)
 
 
 WINDOWS_ES_CONTINUOUS = 0x80000000
@@ -408,6 +415,7 @@ class MainWindow(QMainWindow):
         self.recording_glow_timer.timeout.connect(self._advance_recording_indicator)
         self.recording_glow_timer.setInterval(120)
         QTimer.singleShot(0, self._notify_partial_recordings)
+        self._update_stability_ui()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -452,6 +460,8 @@ class MainWindow(QMainWindow):
         self.label_edit = QLineEdit("air_baseline")
         self.target_ppm_edit = QLineEdit("0")
         self.operator_edit = QLineEdit("operator")
+        self.stability_summary_label = QLabel("Waiting for data")
+        self.stability_lamp_widgets: List[QLabel] = []
 
         self.status_label = QLabel("Disconnected")
         self.profile_label = QLabel("Profile: unknown")
@@ -505,11 +515,32 @@ class MainWindow(QMainWindow):
         status_layout = QVBoxLayout(status_group)
         status_layout.addWidget(self.status_label)
 
+        stability_group = QGroupBox("Stability")
+        stability_layout = QVBoxLayout(stability_group)
+        self.stability_summary_label.setWordWrap(True)
+        stability_layout.addWidget(self.stability_summary_label)
+        stability_grid = QGridLayout()
+        for index in range(10):
+            step_label = QLabel(f"S{index + 1}")
+            step_label.setAlignment(Qt.AlignCenter)
+            lamp = QLabel()
+            lamp.setFixedSize(18, 18)
+            lamp.setAlignment(Qt.AlignCenter)
+            lamp.setToolTip(f"Step {index + 1}")
+            self.stability_lamp_widgets.append(lamp)
+            self._set_stability_lamp_style(lamp, "unused")
+            row = (index // 5) * 2
+            col = index % 5
+            stability_grid.addWidget(step_label, row, col, alignment=Qt.AlignCenter)
+            stability_grid.addWidget(lamp, row + 1, col, alignment=Qt.AlignCenter)
+        stability_layout.addLayout(stability_grid)
+
         controls_layout.addWidget(connection_group)
         controls_layout.addWidget(metadata_group)
         controls_layout.addWidget(self.record_group)
         controls_layout.addWidget(profile_group)
         controls_layout.addWidget(status_group)
+        controls_layout.addWidget(stability_group)
 
         left_column.addWidget(controls, stretch=0)
 
@@ -776,6 +807,7 @@ class MainWindow(QMainWindow):
         self.environment_axis.set_reference(0.0, None)
         self.sensor_axis.set_reference(0.0, None)
         self._invalidate_time_axes()
+        self._update_stability_ui()
         self.log("Plot traces cleared")
 
     def _latest_elapsed(self) -> float:
@@ -884,6 +916,7 @@ class MainWindow(QMainWindow):
         if connected and self.worker:
             self.send_command("GET_PROFILE")
             self.send_command("PING")
+        self._update_stability_ui()
         self.log(f"{'Connected' if connected else 'Disconnected'} {port}")
 
     def handle_serial_error(self, message: str) -> None:
@@ -1079,6 +1112,7 @@ class MainWindow(QMainWindow):
         self.profile_state.update(preset)
         self.update_profile_label()
         self.send_command(self._profile_state_to_command(preset))
+        self._update_stability_ui()
         self.log(f"Profile preset loaded: {preset_name}")
 
     def send_command(self, command: str) -> None:
@@ -1092,6 +1126,7 @@ class MainWindow(QMainWindow):
         temp = self.profile_state.get("heater_profile_temp_c", "")
         base_ms = self.profile_state.get("heater_profile_time_base_ms", "")
         self.profile_label.setText(f"Profile: {profile_id} | base_ms={base_ms} | temp={temp}")
+        self._update_stability_ui()
 
     def _config_directory(self) -> Path:
         config_dir = QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation)
@@ -1347,6 +1382,7 @@ class MainWindow(QMainWindow):
             self.data_buffers["gas"],
             self.stability_config,
         )
+        self._update_stability_ui()
         self._update_segment_bands()
 
     def _write_csv_header(self) -> None:
@@ -1395,6 +1431,83 @@ class MainWindow(QMainWindow):
         if self.is_recording:
             status += " | RECORDING"
         self.status_label.setText(status)
+
+    def _active_profile_step_count(self) -> int:
+        raw_len = self.profile_state.get("profile_len", "").strip()
+        if raw_len.isdigit():
+            return max(0, min(10, int(raw_len)))
+        temp_values = [part.strip() for part in self.profile_state.get("heater_profile_temp_c", "").split(",") if part.strip()]
+        return max(0, min(10, len(temp_values)))
+
+    def _set_stability_lamp_style(self, lamp: QLabel, state: str) -> None:
+        style_map = {
+            STABILITY_STATE_STABLE: ("#22c55e", "#14532d"),
+            STABILITY_STATE_UNSTABLE: ("#ef4444", "#7f1d1d"),
+            STABILITY_STATE_UNKNOWN: ("#a3a3a3", "#404040"),
+            "unused": ("#d6d3d1", "#78716c"),
+        }
+        fill, border = style_map[state]
+        lamp.setStyleSheet(
+            f"""
+            QLabel {{
+                background-color: {fill};
+                border: 2px solid {border};
+                border-radius: 9px;
+            }}
+            """
+        )
+
+    def _update_stability_ui(self) -> None:
+        active_steps = self._active_profile_step_count()
+        channels = self.latest_stability_snapshot.channels
+
+        stable_count = 0
+        unknown_count = 0
+        for index, lamp in enumerate(self.stability_lamp_widgets):
+            if index >= active_steps:
+                self._set_stability_lamp_style(lamp, "unused")
+                lamp.setToolTip(f"Step {index + 1}: unused")
+                continue
+
+            channel = channels[index] if index < len(channels) else None
+            if channel is None:
+                state = STABILITY_STATE_UNKNOWN
+                tooltip = f"Step {index + 1}: no data"
+            else:
+                state = channel.state
+                tooltip = (
+                    f"Step {index + 1}: {state}\n"
+                    f"history_span={channel.history_span:.4f}\n"
+                    f"recent_span={channel.recent_span:.4f}\n"
+                    f"ratio={channel.ratio:.4f}\n"
+                    f"samples={channel.sample_count}"
+                )
+                if state == STABILITY_STATE_STABLE:
+                    stable_count += 1
+                elif state == STABILITY_STATE_UNKNOWN:
+                    unknown_count += 1
+
+            self._set_stability_lamp_style(lamp, state)
+            lamp.setToolTip(tooltip)
+
+        if not self.is_connected:
+            self.stability_summary_label.setText("Disconnected")
+            return
+
+        if active_steps == 0:
+            self.stability_summary_label.setText("No active heater steps")
+            return
+
+        if unknown_count == active_steps:
+            self.stability_summary_label.setText("Waiting for enough history")
+            return
+
+        required_count = min(self.stability_config.required_channel_count, active_steps)
+        if stable_count >= required_count:
+            self.stability_summary_label.setText(f"Stable {stable_count}/{active_steps}")
+            return
+
+        self.stability_summary_label.setText(f"Stabilizing {stable_count}/{active_steps}")
 
     def _set_recording_indicator_active(self, active: bool) -> None:
         if active:
