@@ -30,7 +30,9 @@
 - 可変長ヒータープロファイル（`1..10` ステップ）
 - ライブプロットと表示スパン切り替えを備えた GUI
 - プロファイル編集およびリセット操作
+- 名前付きヒータープロファイルプリセット
 - メタデータヘッダー付き CSV 記録
+- 起動時スプラッシュ表示
 
 ## Firmware
 
@@ -62,7 +64,8 @@ pip install -r requirements.txt
 pyinstaller --clean main.spec
 ```
 
-ビルドされた実行可能ファイルは `dist/bme688_logger.exe` に生成されます。
+ビルド成果物は `dist/bme688_logger/` に生成されます。実行ファイルは
+`dist/bme688_logger/bme688_logger.exe` です。
 
 ### 実行
 
@@ -79,7 +82,7 @@ python main.py
 または、ビルドされた実行可能ファイルを使用:
 
 ```bash
-dist/bme688_logger.exe
+dist/bme688_logger/bme688_logger.exe
 ```
 
 ## Windows パッケージング

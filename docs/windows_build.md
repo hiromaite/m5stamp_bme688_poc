@@ -7,8 +7,8 @@
 
 主経路:
 
-- `PyInstaller` (--onefileモード)
-- 単一実行ファイル生成で配布が容易
+- `PyInstaller` (`onedir` モード)
+- 起動速度を優先し、展開済みディレクトリで配布する
 
 fallback:
 
@@ -18,6 +18,7 @@ fallback:
 本プロジェクトは `PySide6` と `pyqtgraph` を利用しており、Windows 実機で
 `PyInstaller` によるパッケージ化成功を確認済みです。現時点では
 `PyInstaller` を主経路とし、`pyside6-deploy` は fallback として扱います。
+また、Windows 実機で `onedir` 生成物のスモークテスト完了を確認しています。
 
 ## PyInstaller でのパッケージング (主経路)
 
@@ -34,6 +35,13 @@ pyinstaller --clean main.spec
 - `PySide6` plugin ディレクトリの動的解決
 - `pyqtgraph`, `serial`, `app_metadata`, `serial_protocol` などの hiddenimports
 - `windowed` 実行形式
+- `onedir` 出力 (`dist/bme688_logger/`)
+
+生成後の実行ファイル:
+
+```bash
+dist\bme688_logger\bme688_logger.exe
+```
 
 ## 想定する Windows ビルド環境
 
@@ -76,6 +84,5 @@ pyside6-deploy -f --mode standalone main.py
 
 ## 未確定事項
 
-- onefile 出力の起動速度や安定性が運用上十分か
-- `v01.00` 前にアプリアイコンを追加するか
+- `v02.01` リリース時点でアプリアイコンを追加するか
 - リリース工程で Windows のコード署名が必要か
