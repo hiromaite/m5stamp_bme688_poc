@@ -44,6 +44,7 @@ from serial.tools import list_ports
 
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
+from stability_analyzer import StabilityConfig, StabilitySnapshot, analyze_gas_stability
 
 
 WINDOWS_ES_CONTINUOUS = 0x80000000
@@ -358,6 +359,11 @@ class MainWindow(QMainWindow):
             "heater_profile_time_base_ms": "",
         }
         self.profile_presets: Dict[str, Dict[str, str]] = {}
+        self.stability_config = StabilityConfig()
+        self.latest_stability_snapshot = StabilitySnapshot.empty(
+            channel_count=10,
+            required_channel_count=self.stability_config.required_channel_count,
+        )
         self.data_buffers = {
             "environment": {
                 "time": [],
@@ -751,6 +757,10 @@ class MainWindow(QMainWindow):
         self.plot_dirty = False
         self.completed_segments = []
         self._clear_segment_bands()
+        self.latest_stability_snapshot = StabilitySnapshot.empty(
+            channel_count=10,
+            required_channel_count=self.stability_config.required_channel_count,
+        )
 
         self.temperature_curve.setData([], [])
         self.humidity_curve.setData([], [])
@@ -1333,6 +1343,10 @@ class MainWindow(QMainWindow):
 
         heater = self.data_buffers["heater"]
         self.heater_curve.setData(heater["time"], heater["value"])
+        self.latest_stability_snapshot = analyze_gas_stability(
+            self.data_buffers["gas"],
+            self.stability_config,
+        )
         self._update_segment_bands()
 
     def _write_csv_header(self) -> None:
