@@ -263,6 +263,14 @@ class MainWindow(QMainWindow):
         self.app_state.profile.presets = value
 
     @property
+    def protocol_capabilities(self) -> Dict[str, str]:
+        return self.app_state.protocol.capabilities
+
+    @protocol_capabilities.setter
+    def protocol_capabilities(self, value: Dict[str, str]) -> None:
+        self.app_state.protocol.capabilities = value
+
+    @property
     def last_plot_time_ms(self) -> Optional[int]:
         return self.app_state.plot.last_plot_time_ms
 
@@ -795,6 +803,8 @@ class MainWindow(QMainWindow):
         connection_state = self.app_state.connection
         recording_state = self.app_state.recording
         connection_state.is_connected = connected
+        if not connected:
+            self.protocol_capabilities = {}
         self.connect_button.setEnabled(not connected)
         self.scan_button.setEnabled(not connected)
         self.port_combo.setEnabled(not connected)
@@ -810,6 +820,7 @@ class MainWindow(QMainWindow):
         self._update_status_label(port if connected else "")
         self._update_sleep_prevention_state()
         if connected and self.worker:
+            self.send_command("GET_CAPS")
             self.send_command("GET_PROFILE")
             self.send_command("PING")
         self._update_stability_ui()
@@ -1199,6 +1210,16 @@ class MainWindow(QMainWindow):
 
         self.log(raw_line)
 
+    def _handle_caps_line(self, payload: Dict[str, str], raw_line: str) -> None:
+        self.protocol_capabilities.update(payload)
+        if "protocol_version" in payload:
+            protocol_version = payload.get("protocol_version", "unknown")
+            firmware_version = self.protocol_capabilities.get("firmware_version", "unknown")
+            self.log(f"Firmware capabilities detected: protocol={protocol_version} firmware={firmware_version}")
+            self._update_status_label(self.port_combo.currentText() if self.is_connected else "")
+            return
+        self.log(f"Capability: {raw_line}")
+
     def handle_serial_line(self, line: str) -> None:
         parsed = parse_serial_line(line)
         if parsed is None:
@@ -1216,6 +1237,10 @@ class MainWindow(QMainWindow):
 
         if parsed.line_type == "event":
             self._handle_event_line(parsed.payload, parsed.raw_line)
+            return
+
+        if parsed.line_type == "caps":
+            self._handle_caps_line(parsed.payload, parsed.raw_line)
             return
 
         if parsed.line_type != "csv":
@@ -1366,6 +1391,12 @@ class MainWindow(QMainWindow):
             return
 
         status = f"Connected: {port}"
+        if self.protocol_capabilities:
+            protocol_version = self.protocol_capabilities.get("protocol_version", "")
+            firmware_version = self.protocol_capabilities.get("firmware_version", "")
+            capability_suffix = ", ".join(part for part in [f"proto {protocol_version}" if protocol_version else "", firmware_version] if part)
+            if capability_suffix:
+                status += f" | {capability_suffix}"
         if self.is_recording:
             status += " | RECORDING"
         self.status_label.setText(status)

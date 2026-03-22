@@ -9,6 +9,7 @@ CSV_PREFIX = "[csv] "
 PROFILE_PREFIX = "[profile] "
 STATUS_PREFIX = "[status] "
 EVENT_PREFIX = "[event] "
+CAPS_PREFIX = "[caps] "
 
 EXPECTED_COLUMNS = [
     "frame_id",
@@ -73,6 +74,9 @@ def parse_serial_line(line: str) -> Optional[ParsedSerialLine]:
 
     if line.startswith(EVENT_PREFIX):
         return ParsedSerialLine("event", parse_key_value_payload(line[len(EVENT_PREFIX) :]), line)
+
+    if line.startswith(CAPS_PREFIX):
+        return ParsedSerialLine("caps", parse_key_value_payload(line[len(CAPS_PREFIX) :]), line)
 
     return ParsedSerialLine("other", {"message": line}, line)
 
