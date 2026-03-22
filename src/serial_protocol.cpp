@@ -89,6 +89,11 @@ void handleCommand(const String &rawCommand) {
     return;
   }
 
+  if (command == "GET_CAPS") {
+    serial_protocol::printCapabilities();
+    return;
+  }
+
   if (command == "RESET_PROFILE") {
     handleResetProfileCommand();
     return;
@@ -116,6 +121,14 @@ void printBootBanner() {
   Serial.printf("I2C default pins: SDA=%u, SCL=%u\n", SDA, SCL);
 }
 
+void printCapabilityKeyValue(const char *key, const char *value) {
+  Serial.printf("[caps] %s=%s\n", key, value);
+}
+
+void printCapabilityKeyValue(const char *key, int value) {
+  Serial.printf("[caps] %s=%d\n", key, value);
+}
+
 void printStatusKeyValue(const char *key, const char *value) {
   Serial.printf("[status] %s=%s\n", key, value);
 }
@@ -130,6 +143,19 @@ void printEventKeyValue(const char *key, const char *value) {
 
 void printEventKeyValue(const char *key, int value) {
   Serial.printf("[event] %s=%d\n", key, value);
+}
+
+void printCapabilities() {
+  printCapabilityKeyValue("protocol_version", app_config::kProtocolVersion);
+  printCapabilityKeyValue("firmware_version", app_config::kFirmwareVersion);
+  printCapabilityKeyValue("supported_commands", app_config::kSupportedCommands);
+  printCapabilityKeyValue("board_type", app_config::kBoardType);
+  printCapabilityKeyValue("sensor_type", app_config::kSensorType);
+  printCapabilityKeyValue("min_profile_len", app_config::kMinProfileLength);
+  printCapabilityKeyValue("max_profile_len", app_config::kMaxProfileLength);
+  printCapabilityKeyValue("default_profile_len", app_config::kMaxProfileLength);
+  printCapabilityKeyValue("supports_runtime_profile", 1);
+  printCapabilityKeyValue("supports_parallel_mode", 1);
 }
 
 void printCurrentProfileDetails() {

@@ -63,8 +63,14 @@ class ProfileState:
 
 
 @dataclass
+class ProtocolState:
+    capabilities: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class AppState:
     connection: ConnectionState = field(default_factory=ConnectionState)
     recording: RecordingState = field(default_factory=RecordingState)
     plot: PlotViewState = field(default_factory=PlotViewState)
     profile: ProfileState = field(default_factory=ProfileState)
+    protocol: ProtocolState = field(default_factory=ProtocolState)
