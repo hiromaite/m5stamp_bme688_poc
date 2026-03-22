@@ -4,18 +4,14 @@ import csv
 import ctypes
 import json
 import math
-import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from threading import Event
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pyqtgraph as pg
-import serial
-from PySide6 import __file__ as PYSIDE6_FILE
-from PySide6.QtCore import QCoreApplication, QLibraryInfo, QStandardPaths, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QStandardPaths, QTimer, Qt
 from PySide6.QtGui import QColor, QBrush, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,6 +38,7 @@ from serial.tools import list_ports
 from app_state import AppState, SegmentState
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from dialogs import ProfileDialog, StabilitySettingsDialog
+from serial_worker import SerialWorker
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 from stability_analyzer import (
     STABILITY_STATE_STABLE,
@@ -51,6 +48,7 @@ from stability_analyzer import (
     StabilitySnapshot,
     analyze_gas_stability,
 )
+from time_axis import TimeAxisItem
 
 
 WINDOWS_ES_CONTINUOUS = 0x80000000
@@ -78,152 +76,6 @@ TIME_AXIS_MODES: List[Tuple[str, str]] = [
 ]
 PROFILE_PRESETS_FILENAME = "heater_profile_presets.json"
 STABILITY_SETTINGS_FILENAME = "stability_settings.json"
-
-
-def configure_qt_runtime() -> None:
-    plugins_dir: Optional[Path] = None
-    qt_lib_dir: Optional[Path] = None
-
-    try:
-        plugin_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
-        if plugin_path:
-            candidate = Path(plugin_path)
-            if candidate.is_dir():
-                plugins_dir = candidate
-        library_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.LibrariesPath)
-        if library_path:
-            candidate = Path(library_path)
-            if candidate.is_dir():
-                qt_lib_dir = candidate
-    except Exception:
-        pass
-
-    if plugins_dir is None or qt_lib_dir is None:
-        pyside_dir = Path(PYSIDE6_FILE).resolve().parent
-        plugin_candidates = [
-            pyside_dir / "plugins",
-            pyside_dir / "Qt" / "plugins",
-        ]
-        qt_lib_candidates = [
-            pyside_dir / "Qt" / "lib",
-            pyside_dir / "lib",
-            pyside_dir,
-        ]
-        if plugins_dir is None:
-            plugins_dir = next((path for path in plugin_candidates if path.is_dir()), plugin_candidates[-1])
-        if qt_lib_dir is None:
-            qt_lib_dir = next((path for path in qt_lib_candidates if path.is_dir()), qt_lib_candidates[-1])
-
-    if not os.environ.get("QT_PLUGIN_PATH"):
-        os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
-    platform_plugins_dir = plugins_dir / "platforms"
-    if not os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH"):
-        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platform_plugins_dir)
-    if sys.platform == "darwin":
-        if not os.environ.get("DYLD_FRAMEWORK_PATH"):
-            os.environ["DYLD_FRAMEWORK_PATH"] = str(qt_lib_dir)
-        if not os.environ.get("DYLD_LIBRARY_PATH"):
-            os.environ["DYLD_LIBRARY_PATH"] = str(qt_lib_dir)
-    elif sys.platform.startswith("linux"):
-        if not os.environ.get("LD_LIBRARY_PATH"):
-            os.environ["LD_LIBRARY_PATH"] = str(qt_lib_dir)
-
-    QCoreApplication.setLibraryPaths([str(plugins_dir)])
-
-
-class TimeAxisItem(pg.AxisItem):
-    def __init__(self, orientation: str = "bottom") -> None:
-        super().__init__(orientation=orientation)
-        self.mode = "relative"
-        self.latest_elapsed = 0.0
-        self.session_start_epoch: Optional[float] = None
-
-    def set_mode(self, mode: str) -> None:
-        self.mode = mode
-
-    def set_reference(self, latest_elapsed: float, session_start_epoch: Optional[float]) -> None:
-        self.latest_elapsed = latest_elapsed
-        self.session_start_epoch = session_start_epoch
-
-    def tickStrings(self, values: Sequence[float], scale: float, spacing: float) -> List[str]:
-        if not values:
-            return []
-
-        labels: List[str] = []
-        for value in values:
-            if self.mode == "clock":
-                if self.session_start_epoch is None:
-                    labels.append("—")
-                else:
-                    try:
-                        dt = datetime.fromtimestamp(
-                            self.session_start_epoch + float(value),
-                            tz=timezone.utc,
-                        ).astimezone()
-                        labels.append(dt.strftime("%H:%M:%S"))
-                    except (OSError, OverflowError, ValueError):
-                        labels.append("—")
-                continue
-
-            delta = float(value) - self.latest_elapsed
-            sign = "-" if delta < 0 else ""
-            total_seconds = max(0, int(round(abs(delta))))
-            hours, remainder = divmod(total_seconds, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            labels.append(f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}")
-        return labels
-
-
-class SerialWorker(QThread):
-    line_received = Signal(str)
-    connection_changed = Signal(bool, str)
-    error_occurred = Signal(str)
-
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.5):
-        super().__init__()
-        self._port = port
-        self._baudrate = baudrate
-        self._timeout = timeout
-        self._stop_requested = Event()
-        self._serial: Optional[serial.Serial] = None
-
-    def run(self) -> None:
-        try:
-            self._serial = serial.Serial(self._port, self._baudrate, timeout=self._timeout, write_timeout=self._timeout)
-            self.connection_changed.emit(True, self._port)
-            while not self._stop_requested.is_set() and self._serial:
-                line_bytes = self._serial.readline()
-                if self._stop_requested.is_set():
-                    break
-                if not line_bytes:
-                    continue
-                line = line_bytes.decode("utf-8", errors="replace").strip()
-                if line:
-                    self.line_received.emit(line)
-        except serial.SerialException as exc:
-            self.error_occurred.emit(str(exc))
-        finally:
-            if self._serial:
-                try:
-                    self._serial.close()
-                except serial.SerialException:
-                    pass
-            self.connection_changed.emit(False, self._port)
-
-    def stop(self) -> None:
-        self._stop_requested.set()
-        if not self._serial or not self._serial.is_open:
-            return
-        try:
-            self._serial.cancel_read()
-        except (AttributeError, serial.SerialException):
-            pass
-
-    def send_command(self, command: str) -> None:
-        if self._stop_requested.is_set() or not self._serial or not self._serial.is_open:
-            return
-        self._serial.write((command.strip() + "\n").encode("utf-8"))
-        self._serial.flush()
 
 
 class MainWindow(QMainWindow):
