@@ -229,9 +229,18 @@ class SerialWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._init_window_metadata()
+        self._init_runtime_state()
+        self._build_ui()
+        self._wire_events()
+        self._setup_plots()
+        self._complete_startup()
+
+    def _init_window_metadata(self) -> None:
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.resize(1440, 900)
 
+    def _init_runtime_state(self) -> None:
         self.worker: Optional[SerialWorker] = None
         self.app_state = AppState()
         self.csv_file = None
@@ -241,7 +250,32 @@ class MainWindow(QMainWindow):
             channel_count=10,
             required_channel_count=self.stability_config.required_channel_count,
         )
-        self.data_buffers = {
+        self.data_buffers = self._create_empty_data_buffers()
+        self.segment_band_items: List[QGraphicsRectItem] = []
+
+    def _complete_startup(self) -> None:
+        self._load_profile_presets()
+        self.refresh_ports()
+        self._init_timers()
+        self._update_stability_ui()
+        QTimer.singleShot(0, self._notify_partial_recordings)
+
+    def _init_timers(self) -> None:
+        self.plot_timer = QTimer(self)
+        self.plot_timer.timeout.connect(self._refresh_plots_if_dirty)
+        self.plot_timer.start(PLOT_REFRESH_INTERVAL_MS)
+
+        self.csv_flush_timer = QTimer(self)
+        self.csv_flush_timer.setSingleShot(True)
+        self.csv_flush_timer.timeout.connect(self._flush_csv)
+
+        self.recording_glow_timer = QTimer(self)
+        self.recording_glow_timer.timeout.connect(self._advance_recording_indicator)
+        self.recording_glow_timer.setInterval(120)
+
+    @staticmethod
+    def _create_empty_data_buffers() -> Dict[str, object]:
+        return {
             "environment": {
                 "time": [],
                 "temp": [],
@@ -254,27 +288,6 @@ class MainWindow(QMainWindow):
             },
             "gas": [{"time": [], "value": []} for _ in range(10)],
         }
-        self.segment_band_items: List[QGraphicsRectItem] = []
-
-        self._build_ui()
-        self._setup_plots()
-        self._wire_events()
-        self._load_profile_presets()
-        self.refresh_ports()
-
-        self.plot_timer = QTimer(self)
-        self.plot_timer.timeout.connect(self._refresh_plots_if_dirty)
-        self.plot_timer.start(PLOT_REFRESH_INTERVAL_MS)
-
-        self.csv_flush_timer = QTimer(self)
-        self.csv_flush_timer.setSingleShot(True)
-        self.csv_flush_timer.timeout.connect(self._flush_csv)
-
-        self.recording_glow_timer = QTimer(self)
-        self.recording_glow_timer.timeout.connect(self._advance_recording_indicator)
-        self.recording_glow_timer.setInterval(120)
-        QTimer.singleShot(0, self._notify_partial_recordings)
-        self._update_stability_ui()
 
     @property
     def is_connected(self) -> bool:
@@ -802,19 +815,7 @@ class MainWindow(QMainWindow):
     def clear_plots(self) -> None:
         plot_state = self.app_state.plot
         recording_state = self.app_state.recording
-        self.data_buffers = {
-            "environment": {
-                "time": [],
-                "temp": [],
-                "humidity": [],
-                "pressure": [],
-            },
-            "heater": {
-                "time": [],
-                "value": [],
-            },
-            "gas": [{"time": [], "value": []} for _ in range(10)],
-        }
+        self.data_buffers = self._create_empty_data_buffers()
         plot_state.last_plot_time_ms = None
         plot_state.session_start_epoch = None
         plot_state.plot_dirty = False
