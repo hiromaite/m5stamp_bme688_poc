@@ -78,6 +78,7 @@ TIME_AXIS_MODES: List[Tuple[str, str]] = [
     ("Clock", "clock"),
 ]
 PROFILE_PRESETS_FILENAME = "heater_profile_presets.json"
+STABILITY_SETTINGS_FILENAME = "stability_settings.json"
 
 
 def configure_qt_runtime() -> None:
@@ -342,6 +343,63 @@ class ProfileDialog(QDialog):
         return dict(self._profile_values)
 
 
+class StabilitySettingsDialog(QDialog):
+    def __init__(self, parent: QWidget, config: StabilityConfig):
+        super().__init__(parent)
+        self.setWindowTitle("Stability Settings")
+
+        self.threshold_edit = QLineEdit(f"{config.ratio_threshold * 100:.1f}")
+        self.recent_window_edit = QLineEdit(str(int(config.recent_window_seconds)))
+        self.history_window_edit = QLineEdit(str(int(config.history_window_seconds)))
+        self.required_count_edit = QLineEdit(str(int(config.required_channel_count)))
+        self._config = config
+
+        form = QFormLayout(self)
+        form.addRow("Threshold (%)", self.threshold_edit)
+        form.addRow("Recent Window (s)", self.recent_window_edit)
+        form.addRow("History Window (s)", self.history_window_edit)
+        form.addRow("Required Stable Channels", self.required_count_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def accept(self) -> None:  # type: ignore[override]
+        try:
+            threshold_percent = float(self.threshold_edit.text().strip())
+            recent_window_seconds = float(self.recent_window_edit.text().strip())
+            history_window_seconds = float(self.history_window_edit.text().strip())
+            required_channel_count = int(self.required_count_edit.text().strip())
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Values", "すべての項目に有効な数値を入力してください。")
+            return
+
+        if threshold_percent < 0 or threshold_percent > 100:
+            QMessageBox.warning(self, "Invalid Threshold", "Threshold は 0 から 100 の範囲で入力してください。")
+            return
+        if recent_window_seconds <= 0:
+            QMessageBox.warning(self, "Invalid Recent Window", "Recent Window は 0 より大きくしてください。")
+            return
+        if history_window_seconds < recent_window_seconds:
+            QMessageBox.warning(self, "Invalid History Window", "History Window は Recent Window 以上にしてください。")
+            return
+        if required_channel_count < 1 or required_channel_count > 10:
+            QMessageBox.warning(self, "Invalid Channel Count", "Required Stable Channels は 1 から 10 の範囲で入力してください。")
+            return
+
+        self._config = StabilityConfig(
+            history_window_seconds=history_window_seconds,
+            recent_window_seconds=recent_window_seconds,
+            ratio_threshold=threshold_percent / 100.0,
+            required_channel_count=required_channel_count,
+        )
+        super().accept()
+
+    def config(self) -> StabilityConfig:
+        return self._config
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -366,7 +424,7 @@ class MainWindow(QMainWindow):
             "heater_profile_time_base_ms": "",
         }
         self.profile_presets: Dict[str, Dict[str, str]] = {}
-        self.stability_config = StabilityConfig()
+        self.stability_config = self._load_stability_settings_from_disk()
         self.latest_stability_snapshot = StabilitySnapshot.empty(
             channel_count=10,
             required_channel_count=self.stability_config.required_channel_count,
@@ -462,6 +520,7 @@ class MainWindow(QMainWindow):
         self.operator_edit = QLineEdit("operator")
         self.stability_summary_label = QLabel("Waiting for data")
         self.stability_lamp_widgets: List[QLabel] = []
+        self.stability_settings_button = QPushButton("Stability Settings")
 
         self.status_label = QLabel("Disconnected")
         self.profile_label = QLabel("Profile: unknown")
@@ -534,6 +593,7 @@ class MainWindow(QMainWindow):
             stability_grid.addWidget(step_label, row, col, alignment=Qt.AlignCenter)
             stability_grid.addWidget(lamp, row + 1, col, alignment=Qt.AlignCenter)
         stability_layout.addLayout(stability_grid)
+        stability_layout.addWidget(self.stability_settings_button)
 
         controls_layout.addWidget(connection_group)
         controls_layout.addWidget(metadata_group)
@@ -664,6 +724,7 @@ class MainWindow(QMainWindow):
         self.reset_profile_button.clicked.connect(self.reset_profile)
         self.save_preset_button.clicked.connect(self.save_current_profile_as_preset)
         self.load_preset_button.clicked.connect(self.load_selected_profile_preset)
+        self.stability_settings_button.clicked.connect(self.open_stability_settings)
         self.clear_plots_button.clicked.connect(self.clear_plots)
 
     def set_plot_span(self, label: str, seconds: Optional[float], checked: bool) -> None:
@@ -1115,6 +1176,26 @@ class MainWindow(QMainWindow):
         self._update_stability_ui()
         self.log(f"Profile preset loaded: {preset_name}")
 
+    def open_stability_settings(self) -> None:
+        dialog = StabilitySettingsDialog(self, self.stability_config)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        self.stability_config = dialog.config()
+        self._save_stability_settings()
+        self.latest_stability_snapshot = analyze_gas_stability(
+            self.data_buffers["gas"],
+            self.stability_config,
+        )
+        self._update_stability_ui()
+        self.log(
+            "Stability settings updated: "
+            f"threshold={self.stability_config.ratio_threshold * 100:.1f}% "
+            f"recent={self.stability_config.recent_window_seconds:.0f}s "
+            f"history={self.stability_config.history_window_seconds:.0f}s "
+            f"required={self.stability_config.required_channel_count}"
+        )
+
     def send_command(self, command: str) -> None:
         if not self.worker:
             self.log(f"Command skipped while disconnected: {command}")
@@ -1136,6 +1217,43 @@ class MainWindow(QMainWindow):
 
     def _profile_preset_path(self) -> Path:
         return self._config_directory() / PROFILE_PRESETS_FILENAME
+
+    def _stability_settings_path(self) -> Path:
+        return self._config_directory() / STABILITY_SETTINGS_FILENAME
+
+    def _load_stability_settings_from_disk(self) -> StabilityConfig:
+        settings_path = self._stability_settings_path()
+        if not settings_path.exists():
+            return StabilityConfig()
+        try:
+            raw = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return StabilityConfig()
+
+        try:
+            return StabilityConfig(
+                history_window_seconds=float(raw.get("history_window_seconds", 10 * 60.0)),
+                recent_window_seconds=float(raw.get("recent_window_seconds", 30.0)),
+                ratio_threshold=float(raw.get("ratio_threshold", 0.05)),
+                required_channel_count=int(raw.get("required_channel_count", 10)),
+            )
+        except (TypeError, ValueError):
+            return StabilityConfig()
+
+    def _save_stability_settings(self) -> None:
+        settings_path = self._stability_settings_path()
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "format": "stability_settings_v1",
+            "updated_at_iso": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "history_window_seconds": self.stability_config.history_window_seconds,
+            "recent_window_seconds": self.stability_config.recent_window_seconds,
+            "ratio_threshold": self.stability_config.ratio_threshold,
+            "required_channel_count": self.stability_config.required_channel_count,
+        }
+        temp_path = settings_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(settings_path)
 
     def _load_profile_presets(self) -> None:
         preset_path = self._profile_preset_path()

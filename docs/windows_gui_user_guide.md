@@ -31,6 +31,9 @@
   - `Profile Settings`
   - `Reset Profile`
   - 保存済みプリセットの選択、読込、保存
+- `Stability`
+  - 各ヒーターステップの安定ランプ
+  - `Stability Settings`
 - `Event Log`
   - 接続や記録の履歴
 
@@ -107,6 +110,27 @@
 2. `Load Preset` を押します
 
 保存済みプリセットは、次回起動時にも読み込まれます。
+
+## 安定判定の見方
+
+- `Stability` セクションには、現在のヒータープロファイルに対応する安定ランプが表示されます
+- 色の意味
+  - 緑: stable
+  - 赤: unstable
+  - 灰: まだ履歴不足、または未使用ステップ
+- 上部の summary には、現在の安定状況が表示されます
+
+### 安定判定条件を変更する
+
+1. `Stability Settings` を押します
+2. 次の値を必要に応じて変更します
+   - `Threshold (%)`
+   - `Recent Window (s)`
+   - `History Window (s)`
+   - `Required Stable Channels`
+3. `OK` を押します
+
+設定は次回起動時にも保持されます。
 
 ## グラフの操作
 
