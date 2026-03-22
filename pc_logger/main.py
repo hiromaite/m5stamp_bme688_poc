@@ -10,7 +10,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
-from gui_app import configure_qt_runtime, create_main_window
+from gui_app import create_main_window
+from qt_runtime import configure_qt_runtime
 
 
 def _create_splash_pixmap() -> QPixmap:
