@@ -25,6 +25,7 @@
 - `Ver.02.01` と `Ver.02.02` で実験運用 UX はかなり改善したため、次版は **構造整理を前倒し** する価値が高い
 - `SerialWorker`、CSV 保全、Windows packaging、安定判定は現状で実用域に達しており、次版では「壊れにくく拡張しやすい形」に整えることの ROI が高い
 - よって、`Ver.02.03` は新規 UX 機能の大型追加よりも、GUI の責務分割と時間軸 / Qt runtime の堅牢化を優先する
+- `Ver.02.03` では、GUI 状態分離、ダイアログ分離、runtime helper 分離、recording I/O 分離、protocol capability 化まで完了した
 
 ## 完了済みの直近リリース
 
@@ -175,65 +176,76 @@
 - 実装状況
   - 設定保存 / 再読込を含めて `Ver.02.02` で実装済み
 
+## `Ver.02.03` で完了した項目
+
+### 14. GUI 状態管理の分離
+
+- 実装状況
+  - `AppState` を導入し、接続・録画・セグメント・プロファイル・protocol 状態の保持先を整理済み
+
+### 15. MainWindow / ProfileDialog の責務分割
+
+- 実装状況
+  - `dialogs.py`、`recording_io.py`、runtime helper 群へ分割済み
+  - `MainWindow.__init__` の初期化順も整理済み
+
+### 16. プロトコル version / capability 化
+
+- 実装状況
+  - firmware に `GET_CAPS` を追加
+  - GUI が `protocol_version` / `firmware_version` / capability を取得して表示できる状態
+
+### 17. configure_qt_runtime の強化
+
+- 実装状況
+  - `QLibraryInfo` ベースの解決へ更新
+  - Linux を含む fallback を追加
+
+### 21. TimeAxisItem / 時刻処理の堅牢化
+
+- 実装状況
+  - 型明確化
+  - `—` 表示
+  - 例外安全な clock 表示へ更新
+
 ## 次のバージョン候補
 
-想定バージョン: `Ver.02.03`
+想定バージョン: `Ver.02.04`
 
-### 優先度 A: `Ver.02.03` で優先して取り組む項目
+### 優先度 A: `Ver.02.04` で優先して取り組む項目
 
-#### 14. GUI 状態管理の分離
-
-- 背景
-  - `MainWindow` に状態が集中している
-- 目的
-  - テスト容易性と保守性の向上
-- 実装の方向
-  - `AppState` / observer 的な構造
-  - UI と状態更新の責務分離
-
-#### 15. MainWindow / ProfileDialog の責務分割
+#### 22. MainWindow 内の controller 分割
 
 - 背景
-  - `gui_app.py` が大きく、機能追加時の衝突が起こりやすい
+  - 状態管理の土台は入ったが、描画 / 接続 / 記録の責務はまだ `MainWindow` 側に残っている
 - 目的
-  - 可読性と再利用性の向上
+  - 機能追加時の変更衝突をさらに減らす
 - 実装の方向
-  - `ProfileDialog` のモデル層分離
-  - GUI 機能を小さなモジュールへ分割
+  - plot controller
+  - recording controller
+  - serial connection controller の切り出し
 
-#### 17. configure_qt_runtime の強化
+#### 23. ProfileDialog のモデル層分離
 
 - 背景
-  - いまは macOS / Windows 寄りの実装
+  - ダイアログは分離できたが、入力検証ロジックは UI 層寄りのまま
 - 目的
-  - クロスプラットフォーム性の向上
+  - プロファイル検証の再利用性とテスト容易性の向上
 - 実装の方向
-  - `QLibraryInfo` ベースの解決
-  - Linux を含む fallback 強化
+  - 入力値モデル
+  - UI 非依存の validation helper
 
-#### 21. TimeAxisItem / 時刻処理の堅牢化
+### 優先度 B: `Ver.02.04` の次点候補
+
+#### 24. capability 情報の GUI 活用拡大
 
 - 背景
-  - 時間軸は実用化できているが、型注釈、空表示、時刻変換、例外安全の改善余地が残っている
+  - `GET_CAPS` は導入済みだが、現在はステータス表示中心
 - 目的
-  - 相対時間 / Clock 表示の保守性と安定性を上げる
+  - protocol / command 差分に強い GUI にする
 - 実装の方向
-  - `tickStrings()` の型明確化
-  - `clock` 表示の例外安全化
-  - 必要に応じてタイムゾーン処理の明示化
-
-### 優先度 B: `Ver.02.03` の次点候補
-
-#### 16. プロトコル version / capability 化
-
-- 背景
-  - firmware / GUI 間に暗黙前提がまだ多い
-- 目的
-  - 将来の後方互換性を確保する
-- 実装の方向
-  - `protocol_version`
-  - `firmware_version`
-  - `GET_CAPS`
+  - 対応コマンドに応じた UI 制御
+  - firmware 差分時の警告表示
 
 ## 機能が固まった後の整理・最適化
 
@@ -258,5 +270,5 @@
 
 - `1..11` は `Ver.02.01` で完了
 - `12..13` は `Ver.02.02` で完了
-- `Ver.02.03` では `14`, `15`, `17`, `21` を優先候補とし、`16` は次点候補とする
+- `14..17`, `21` は `Ver.02.03` で完了
 - リリース後は、`main` 側のバックログをロールフォワードして次版計画の基準にする運用を継続する

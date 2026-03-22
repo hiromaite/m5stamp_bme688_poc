@@ -8,7 +8,14 @@ PC 側ツール群が含まれています。
 - `main.py`: packaging を意識した GUI エントリポイント
 - `src/gui_app.py`: GUI 実装本体
 - `src/app_metadata.py`: アプリ名とバージョン定数
+- `src/app_state.py`: GUI 状態コンテナ
+- `src/dialogs.py`: プロファイル / 安定判定ダイアログ
+- `src/qt_runtime.py`: Qt runtime 初期化
+- `src/serial_worker.py`: シリアル受信 worker
 - `src/serial_protocol.py`: 共通 serial 解析ヘルパー
+- `src/time_axis.py`: 相対時間 / Clock 表示用 Axis
+- `src/recording_io.py`: CSV / partial session 補助
+- `src/stability_analyzer.py`: 安定判定ロジック
 - `pc_logger.pyproject`: `pyside6-deploy` fallback 用の Qt project 記述
 - `poc/serial_logger.py`: 旧 CLI ロガー PoC のアーカイブ
 - `poc/README.md`: PoC アーカイブの説明
@@ -61,6 +68,7 @@ python poc/serial_logger.py --help
 - 安定判定ランプ表示
 - 安定判定しきい値 / 判定窓の設定保存
 - profile reset
+- firmware capability 表示 (`GET_CAPS`)
 - 環境データのライブプロット
 - ガス抵抗値とヒーター温度のライブプロット
 - 表示スパン切り替え

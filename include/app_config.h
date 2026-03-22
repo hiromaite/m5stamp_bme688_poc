@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 namespace app_config {
-constexpr char kFirmwareVersion[] = "0.2.3-dev";
+constexpr char kFirmwareVersion[] = "0.2.3";
 constexpr char kProtocolVersion[] = "1.1";
 constexpr char kSupportedCommands[] = "PING,GET_PROFILE,SET_PROFILE,RESET_PROFILE,GET_CAPS";
 constexpr char kBoardType[] = "M5StampS3";

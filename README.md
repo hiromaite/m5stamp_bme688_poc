@@ -34,6 +34,8 @@
 - ガス抵抗安定判定ランプと安定判定設定
 - メタデータヘッダー付き CSV 記録
 - 起動時スプラッシュ表示
+- firmware / GUI 間の capability ハンドシェイク (`GET_CAPS`)
+- GUI 状態管理、時間軸、Qt runtime、記録 I/O の分割整理
 
 ## Firmware
 
