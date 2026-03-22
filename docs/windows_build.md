@@ -84,5 +84,5 @@ pyside6-deploy -f --mode standalone main.py
 
 ## 未確定事項
 
-- `v02.01` リリース時点でアプリアイコンを追加するか
+- 現時点でアプリアイコンを追加するか
 - リリース工程で Windows のコード署名が必要か
