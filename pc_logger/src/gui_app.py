@@ -38,6 +38,7 @@ from serial.tools import list_ports
 from app_state import AppState, SegmentState
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from dialogs import ProfileDialog, StabilitySettingsDialog
+from qt_runtime import configure_qt_runtime
 from serial_worker import SerialWorker
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 from stability_analyzer import (
