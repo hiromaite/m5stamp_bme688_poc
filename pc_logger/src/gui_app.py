@@ -7,15 +7,15 @@ import math
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pyqtgraph as pg
 import serial
 from PySide6 import __file__ as PYSIDE6_FILE
-from PySide6.QtCore import QCoreApplication, QStandardPaths, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QLibraryInfo, QStandardPaths, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QBrush, QPen
 from PySide6.QtWidgets import (
     QApplication,
@@ -82,31 +82,55 @@ STABILITY_SETTINGS_FILENAME = "stability_settings.json"
 
 
 def configure_qt_runtime() -> None:
-    pyside_dir = Path(PYSIDE6_FILE).resolve().parent
-    plugin_candidates = [
-        pyside_dir / "plugins",
-        pyside_dir / "Qt" / "plugins",
-    ]
-    qt_lib_candidates = [
-        pyside_dir / "Qt" / "lib",
-        pyside_dir / "lib",
-        pyside_dir,
-    ]
+    plugins_dir: Optional[Path] = None
+    qt_lib_dir: Optional[Path] = None
 
-    plugins_dir = next((path for path in plugin_candidates if path.is_dir()), plugin_candidates[-1])
-    platform_plugins_dir = plugins_dir / "platforms"
-    qt_lib_dir = next((path for path in qt_lib_candidates if path.is_dir()), qt_lib_candidates[-1])
+    try:
+        plugin_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+        if plugin_path:
+            candidate = Path(plugin_path)
+            if candidate.is_dir():
+                plugins_dir = candidate
+        library_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.LibrariesPath)
+        if library_path:
+            candidate = Path(library_path)
+            if candidate.is_dir():
+                qt_lib_dir = candidate
+    except Exception:
+        pass
+
+    if plugins_dir is None or qt_lib_dir is None:
+        pyside_dir = Path(PYSIDE6_FILE).resolve().parent
+        plugin_candidates = [
+            pyside_dir / "plugins",
+            pyside_dir / "Qt" / "plugins",
+        ]
+        qt_lib_candidates = [
+            pyside_dir / "Qt" / "lib",
+            pyside_dir / "lib",
+            pyside_dir,
+        ]
+        if plugins_dir is None:
+            plugins_dir = next((path for path in plugin_candidates if path.is_dir()), plugin_candidates[-1])
+        if qt_lib_dir is None:
+            qt_lib_dir = next((path for path in qt_lib_candidates if path.is_dir()), qt_lib_candidates[-1])
 
     if not os.environ.get("QT_PLUGIN_PATH"):
         os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
+    platform_plugins_dir = plugins_dir / "platforms"
     if not os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH"):
         os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platform_plugins_dir)
-    if not os.environ.get("DYLD_FRAMEWORK_PATH"):
-        os.environ["DYLD_FRAMEWORK_PATH"] = str(qt_lib_dir)
-    if not os.environ.get("DYLD_LIBRARY_PATH"):
-        os.environ["DYLD_LIBRARY_PATH"] = str(qt_lib_dir)
+    if sys.platform == "darwin":
+        if not os.environ.get("DYLD_FRAMEWORK_PATH"):
+            os.environ["DYLD_FRAMEWORK_PATH"] = str(qt_lib_dir)
+        if not os.environ.get("DYLD_LIBRARY_PATH"):
+            os.environ["DYLD_LIBRARY_PATH"] = str(qt_lib_dir)
+    elif sys.platform.startswith("linux"):
+        if not os.environ.get("LD_LIBRARY_PATH"):
+            os.environ["LD_LIBRARY_PATH"] = str(qt_lib_dir)
 
     QCoreApplication.setLibraryPaths([str(plugins_dir)])
+
 
 class TimeAxisItem(pg.AxisItem):
     def __init__(self, orientation: str = "bottom") -> None:
@@ -122,17 +146,27 @@ class TimeAxisItem(pg.AxisItem):
         self.latest_elapsed = latest_elapsed
         self.session_start_epoch = session_start_epoch
 
-    def tickStrings(self, values, scale, spacing):  # type: ignore[override]
-        labels = []
+    def tickStrings(self, values: Sequence[float], scale: float, spacing: float) -> List[str]:
+        if not values:
+            return []
+
+        labels: List[str] = []
         for value in values:
             if self.mode == "clock":
                 if self.session_start_epoch is None:
-                    labels.append("")
+                    labels.append("—")
                 else:
-                    labels.append(datetime.fromtimestamp(self.session_start_epoch + value).strftime("%H:%M:%S"))
+                    try:
+                        dt = datetime.fromtimestamp(
+                            self.session_start_epoch + float(value),
+                            tz=timezone.utc,
+                        ).astimezone()
+                        labels.append(dt.strftime("%H:%M:%S"))
+                    except (OSError, OverflowError, ValueError):
+                        labels.append("—")
                 continue
 
-            delta = value - self.latest_elapsed
+            delta = float(value) - self.latest_elapsed
             sign = "-" if delta < 0 else ""
             total_seconds = max(0, int(round(abs(delta))))
             hours, remainder = divmod(total_seconds, 3600)
