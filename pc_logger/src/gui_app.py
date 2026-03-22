@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QBrush, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QGridLayout,
