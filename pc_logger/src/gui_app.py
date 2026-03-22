@@ -39,6 +39,14 @@ from app_state import AppState, SegmentState
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from dialogs import ProfileDialog, StabilitySettingsDialog
 from qt_runtime import configure_qt_runtime
+from recording_io import (
+    create_recording_paths,
+    find_partial_recordings,
+    recording_directory,
+    segment_export_fields,
+    summarize_partial_recordings,
+    write_csv_header,
+)
 from serial_worker import SerialWorker
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 from stability_analyzer import (
@@ -814,13 +822,22 @@ class MainWindow(QMainWindow):
 
     def start_recording(self) -> None:
         recording_state = self.app_state.recording
-        output_dir = self._recording_directory()
+        output_dir = recording_directory()
         output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("session_%Y%m%d_%H%M%S.csv")
-        recording_state.recording_path = output_dir / timestamp
-        recording_state.recording_temp_path = recording_state.recording_path.with_suffix(".partial.csv")
+        now = datetime.now()
+        recording_paths = create_recording_paths(output_dir, now)
+        recording_state.recording_path = recording_paths.recording_path
+        recording_state.recording_temp_path = recording_paths.partial_path
         self.csv_file = recording_state.recording_temp_path.open("w", newline="", encoding="utf-8")
-        self._write_csv_header()
+        write_csv_header(
+            self.csv_file,
+            exported_at=now,
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
+            operator_id=self.operator_edit.text().strip(),
+            serial_port=self.port_combo.currentText(),
+            profile_state=self.profile_state,
+        )
         self.csv_writer = csv.DictWriter(
             self.csv_file,
             fieldnames=[*OUTPUT_COLUMNS, "segment_id", "segment_label", "segment_target_ppm", "segment_start_iso", "segment_end_iso"],
@@ -1211,11 +1228,7 @@ class MainWindow(QMainWindow):
             segment = self.current_segment
             export_row = {
                 **row,
-                "segment_id": segment.segment_id if segment else "",
-                "segment_label": segment.label if segment else "",
-                "segment_target_ppm": segment.target_ppm if segment else "",
-                "segment_start_iso": segment.start_iso if segment else "",
-                "segment_end_iso": segment.end_iso if segment else "",
+                **segment_export_fields(segment),
             }
             self.csv_writer.writerow(export_row)
             self.pending_csv_rows += 1
@@ -1334,31 +1347,6 @@ class MainWindow(QMainWindow):
         )
         self._update_stability_ui()
         self._update_segment_bands()
-
-    def _write_csv_header(self) -> None:
-        assert self.csv_file is not None
-        now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-        lines = [
-            "# file_format=h2s_benchmark_csv_v1",
-            f"# exported_at_iso={now_iso}",
-            f"# gui_app_name={APP_NAME}",
-            f"# gui_app_version={APP_VERSION}",
-            f"# operator_id={self.operator_edit.text().strip()}",
-            f"# session_id={datetime.now().strftime('%Y%m%d_%H%M%S_run01')}",
-            "# gui_git_commit=working_tree",
-            "# board_type=M5StampS3",
-            "# sensor_type=BME688",
-            f"# serial_port={self.port_combo.currentText()}",
-            f"# heater_profile_id={self.profile_state.get('heater_profile_id', 'unknown')}",
-            f"# heater_profile_temp_c={self.profile_state.get('heater_profile_temp_c', '')}",
-            f"# heater_profile_duration_mult={self.profile_state.get('heater_profile_duration_mult', '')}",
-            f"# heater_profile_time_base_ms={self.profile_state.get('heater_profile_time_base_ms', '')}",
-            "# label_target_gas=H2S",
-            "# label_unit=ppm",
-            "# label_scope=exposure_segment",
-            "# notes=",
-        ]
-        self.csv_file.write("\n".join(lines) + "\n")
 
     def _set_sleep_prevention(self, active: bool) -> None:
         if sys.platform != "win32":
@@ -1568,24 +1556,12 @@ class MainWindow(QMainWindow):
             self.sensor_plot.addItem(item, ignoreBounds=True)
             self.segment_band_items.append(item)
 
-    @staticmethod
-    def _recording_directory() -> Path:
-        return Path("data")
-
-    def _find_partial_recordings(self) -> List[Path]:
-        data_dir = self._recording_directory()
-        if not data_dir.exists():
-            return []
-        return sorted(data_dir.glob("*.partial.csv"))
-
     def _notify_partial_recordings(self) -> None:
-        partials = self._find_partial_recordings()
+        partials = find_partial_recordings()
         if not partials:
             return
 
-        preview = "\n".join(f"- {path.name}" for path in partials[:5])
-        if len(partials) > 5:
-            preview += f"\n- ... and {len(partials) - 5} more"
+        preview = summarize_partial_recordings(partials)
 
         self.log(f"Found {len(partials)} incomplete recording file(s)")
         QMessageBox.warning(
