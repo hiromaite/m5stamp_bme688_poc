@@ -7,7 +7,6 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Event
@@ -42,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 from serial.tools import list_ports
 
+from app_state import AppState, SegmentState
 from app_metadata import APP_ID, APP_NAME, APP_VERSION
 from serial_protocol import OUTPUT_COLUMNS, enrich_csv_row, parse_serial_line
 from stability_analyzer import (
@@ -107,18 +107,6 @@ def configure_qt_runtime() -> None:
         os.environ["DYLD_LIBRARY_PATH"] = str(qt_lib_dir)
 
     QCoreApplication.setLibraryPaths([str(plugins_dir)])
-
-
-@dataclass
-class SegmentState:
-    segment_id: str
-    label: str
-    target_ppm: str
-    start_iso: str
-    start_elapsed: float
-    end_iso: str = ""
-    end_elapsed: Optional[float] = None
-
 
 class TimeAxisItem(pg.AxisItem):
     def __init__(self, orientation: str = "bottom") -> None:
@@ -407,23 +395,9 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
 
         self.worker: Optional[SerialWorker] = None
-        self.is_connected = False
-        self.is_recording = False
-        self.current_segment: Optional[SegmentState] = None
-        self.segment_counter = 0
-        self.recording_path: Optional[Path] = None
-        self.recording_temp_path: Optional[Path] = None
+        self.app_state = AppState()
         self.csv_file = None
         self.csv_writer = None
-        self.pending_csv_rows = 0
-        self.last_csv_flush_at = 0.0
-        self.profile_state: Dict[str, str] = {
-            "heater_profile_id": "unknown",
-            "heater_profile_temp_c": "",
-            "heater_profile_duration_mult": "",
-            "heater_profile_time_base_ms": "",
-        }
-        self.profile_presets: Dict[str, Dict[str, str]] = {}
         self.stability_config = self._load_stability_settings_from_disk()
         self.latest_stability_snapshot = StabilitySnapshot.empty(
             channel_count=10,
@@ -442,18 +416,7 @@ class MainWindow(QMainWindow):
             },
             "gas": [{"time": [], "value": []} for _ in range(10)],
         }
-        self.last_plot_time_ms = None
-        self.last_pong_iso = ""
-        self.selected_span_seconds: Optional[float] = None
-        self.selected_span_label: Optional[str] = "All"
-        self.time_axis_mode = "relative"
-        self.last_selected_port = ""
-        self.session_start_epoch: Optional[float] = None
-        self.plot_dirty = False
-        self._suppress_span_reset_until = 0.0
-        self.completed_segments: List[SegmentState] = []
         self.segment_band_items: List[QGraphicsRectItem] = []
-        self.recording_glow_phase = 0.0
 
         self._build_ui()
         self._setup_plots()
@@ -474,6 +437,174 @@ class MainWindow(QMainWindow):
         self.recording_glow_timer.setInterval(120)
         QTimer.singleShot(0, self._notify_partial_recordings)
         self._update_stability_ui()
+
+    @property
+    def is_connected(self) -> bool:
+        return self.app_state.connection.is_connected
+
+    @is_connected.setter
+    def is_connected(self, value: bool) -> None:
+        self.app_state.connection.is_connected = value
+
+    @property
+    def last_selected_port(self) -> str:
+        return self.app_state.connection.last_selected_port
+
+    @last_selected_port.setter
+    def last_selected_port(self, value: str) -> None:
+        self.app_state.connection.last_selected_port = value
+
+    @property
+    def last_pong_iso(self) -> str:
+        return self.app_state.connection.last_pong_iso
+
+    @last_pong_iso.setter
+    def last_pong_iso(self, value: str) -> None:
+        self.app_state.connection.last_pong_iso = value
+
+    @property
+    def is_recording(self) -> bool:
+        return self.app_state.recording.is_recording
+
+    @is_recording.setter
+    def is_recording(self, value: bool) -> None:
+        self.app_state.recording.is_recording = value
+
+    @property
+    def current_segment(self) -> Optional[SegmentState]:
+        return self.app_state.recording.current_segment
+
+    @current_segment.setter
+    def current_segment(self, value: Optional[SegmentState]) -> None:
+        self.app_state.recording.current_segment = value
+
+    @property
+    def segment_counter(self) -> int:
+        return self.app_state.recording.segment_counter
+
+    @segment_counter.setter
+    def segment_counter(self, value: int) -> None:
+        self.app_state.recording.segment_counter = value
+
+    @property
+    def completed_segments(self) -> List[SegmentState]:
+        return self.app_state.recording.completed_segments
+
+    @completed_segments.setter
+    def completed_segments(self, value: List[SegmentState]) -> None:
+        self.app_state.recording.completed_segments = value
+
+    @property
+    def recording_path(self) -> Optional[Path]:
+        return self.app_state.recording.recording_path
+
+    @recording_path.setter
+    def recording_path(self, value: Optional[Path]) -> None:
+        self.app_state.recording.recording_path = value
+
+    @property
+    def recording_temp_path(self) -> Optional[Path]:
+        return self.app_state.recording.recording_temp_path
+
+    @recording_temp_path.setter
+    def recording_temp_path(self, value: Optional[Path]) -> None:
+        self.app_state.recording.recording_temp_path = value
+
+    @property
+    def pending_csv_rows(self) -> int:
+        return self.app_state.recording.pending_csv_rows
+
+    @pending_csv_rows.setter
+    def pending_csv_rows(self, value: int) -> None:
+        self.app_state.recording.pending_csv_rows = value
+
+    @property
+    def last_csv_flush_at(self) -> float:
+        return self.app_state.recording.last_csv_flush_at
+
+    @last_csv_flush_at.setter
+    def last_csv_flush_at(self, value: float) -> None:
+        self.app_state.recording.last_csv_flush_at = value
+
+    @property
+    def recording_glow_phase(self) -> float:
+        return self.app_state.recording.recording_glow_phase
+
+    @recording_glow_phase.setter
+    def recording_glow_phase(self, value: float) -> None:
+        self.app_state.recording.recording_glow_phase = value
+
+    @property
+    def profile_state(self) -> Dict[str, str]:
+        return self.app_state.profile.current
+
+    @profile_state.setter
+    def profile_state(self, value: Dict[str, str]) -> None:
+        self.app_state.profile.current = value
+
+    @property
+    def profile_presets(self) -> Dict[str, Dict[str, str]]:
+        return self.app_state.profile.presets
+
+    @profile_presets.setter
+    def profile_presets(self, value: Dict[str, Dict[str, str]]) -> None:
+        self.app_state.profile.presets = value
+
+    @property
+    def last_plot_time_ms(self) -> Optional[int]:
+        return self.app_state.plot.last_plot_time_ms
+
+    @last_plot_time_ms.setter
+    def last_plot_time_ms(self, value: Optional[int]) -> None:
+        self.app_state.plot.last_plot_time_ms = value
+
+    @property
+    def selected_span_seconds(self) -> Optional[float]:
+        return self.app_state.plot.selected_span_seconds
+
+    @selected_span_seconds.setter
+    def selected_span_seconds(self, value: Optional[float]) -> None:
+        self.app_state.plot.selected_span_seconds = value
+
+    @property
+    def selected_span_label(self) -> Optional[str]:
+        return self.app_state.plot.selected_span_label
+
+    @selected_span_label.setter
+    def selected_span_label(self, value: Optional[str]) -> None:
+        self.app_state.plot.selected_span_label = value
+
+    @property
+    def time_axis_mode(self) -> str:
+        return self.app_state.plot.time_axis_mode
+
+    @time_axis_mode.setter
+    def time_axis_mode(self, value: str) -> None:
+        self.app_state.plot.time_axis_mode = value
+
+    @property
+    def session_start_epoch(self) -> Optional[float]:
+        return self.app_state.plot.session_start_epoch
+
+    @session_start_epoch.setter
+    def session_start_epoch(self, value: Optional[float]) -> None:
+        self.app_state.plot.session_start_epoch = value
+
+    @property
+    def plot_dirty(self) -> bool:
+        return self.app_state.plot.plot_dirty
+
+    @plot_dirty.setter
+    def plot_dirty(self, value: bool) -> None:
+        self.app_state.plot.plot_dirty = value
+
+    @property
+    def _suppress_span_reset_until(self) -> float:
+        return self.app_state.plot.suppress_span_reset_until
+
+    @_suppress_span_reset_until.setter
+    def _suppress_span_reset_until(self, value: float) -> None:
+        self.app_state.plot.suppress_span_reset_until = value
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -831,6 +962,8 @@ class MainWindow(QMainWindow):
         self.plot_dirty = False
 
     def clear_plots(self) -> None:
+        plot_state = self.app_state.plot
+        recording_state = self.app_state.recording
         self.data_buffers = {
             "environment": {
                 "time": [],
@@ -844,10 +977,10 @@ class MainWindow(QMainWindow):
             },
             "gas": [{"time": [], "value": []} for _ in range(10)],
         }
-        self.last_plot_time_ms = None
-        self.session_start_epoch = None
-        self.plot_dirty = False
-        self.completed_segments = []
+        plot_state.last_plot_time_ms = None
+        plot_state.session_start_epoch = None
+        plot_state.plot_dirty = False
+        recording_state.completed_segments = []
         self._clear_segment_bands()
         self.latest_stability_snapshot = StabilitySnapshot.empty(
             channel_count=10,
@@ -959,19 +1092,21 @@ class MainWindow(QMainWindow):
         self.handle_connection_changed(False, self.port_combo.currentText())
 
     def handle_connection_changed(self, connected: bool, port: str) -> None:
-        self.is_connected = connected
+        connection_state = self.app_state.connection
+        recording_state = self.app_state.recording
+        connection_state.is_connected = connected
         self.connect_button.setEnabled(not connected)
         self.scan_button.setEnabled(not connected)
         self.port_combo.setEnabled(not connected)
         self.disconnect_button.setEnabled(connected)
-        self.record_button.setEnabled(connected and not self.is_recording)
-        self.clear_plots_button.setEnabled(not self.is_recording)
-        self.start_segment_button.setEnabled(connected and self.is_recording and self.current_segment is None)
-        self.end_segment_button.setEnabled(connected and self.is_recording and self.current_segment is not None)
-        self.profile_button.setEnabled(connected and not self.is_recording)
-        self.reset_profile_button.setEnabled(connected and not self.is_recording)
-        self.save_preset_button.setEnabled(connected and not self.is_recording)
-        self.load_preset_button.setEnabled(connected and not self.is_recording and self.profile_preset_combo.count() > 0)
+        self.record_button.setEnabled(connected and not recording_state.is_recording)
+        self.clear_plots_button.setEnabled(not recording_state.is_recording)
+        self.start_segment_button.setEnabled(connected and recording_state.is_recording and recording_state.current_segment is None)
+        self.end_segment_button.setEnabled(connected and recording_state.is_recording and recording_state.current_segment is not None)
+        self.profile_button.setEnabled(connected and not recording_state.is_recording)
+        self.reset_profile_button.setEnabled(connected and not recording_state.is_recording)
+        self.save_preset_button.setEnabled(connected and not recording_state.is_recording)
+        self.load_preset_button.setEnabled(connected and not recording_state.is_recording and self.profile_preset_combo.count() > 0)
         self._update_status_label(port if connected else "")
         self._update_sleep_prevention_state()
         if connected and self.worker:
@@ -986,12 +1121,13 @@ class MainWindow(QMainWindow):
         self.disconnect_serial()
 
     def start_recording(self) -> None:
+        recording_state = self.app_state.recording
         output_dir = self._recording_directory()
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("session_%Y%m%d_%H%M%S.csv")
-        self.recording_path = output_dir / timestamp
-        self.recording_temp_path = self.recording_path.with_suffix(".partial.csv")
-        self.csv_file = self.recording_temp_path.open("w", newline="", encoding="utf-8")
+        recording_state.recording_path = output_dir / timestamp
+        recording_state.recording_temp_path = recording_state.recording_path.with_suffix(".partial.csv")
+        self.csv_file = recording_state.recording_temp_path.open("w", newline="", encoding="utf-8")
         self._write_csv_header()
         self.csv_writer = csv.DictWriter(
             self.csv_file,
@@ -999,10 +1135,10 @@ class MainWindow(QMainWindow):
         )
         self.csv_writer.writeheader()
         self.csv_file.flush()
-        self.pending_csv_rows = 0
-        self.last_csv_flush_at = time.monotonic()
+        recording_state.pending_csv_rows = 0
+        recording_state.last_csv_flush_at = time.monotonic()
 
-        self.is_recording = True
+        recording_state.is_recording = True
         self.record_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.clear_plots_button.setEnabled(False)
@@ -1013,7 +1149,7 @@ class MainWindow(QMainWindow):
         self._update_sleep_prevention_state()
         self._set_recording_indicator_active(True)
         self._update_status_label(self.port_combo.currentText())
-        self.log(f"Recording started: {self.recording_path}")
+        self.log(f"Recording started: {recording_state.recording_path}")
 
     def request_stop_recording(self) -> None:
         if not self.is_recording:
@@ -1031,22 +1167,24 @@ class MainWindow(QMainWindow):
         self.stop_recording()
 
     def stop_recording(self) -> None:
-        if self.current_segment:
+        recording_state = self.app_state.recording
+        connection_state = self.app_state.connection
+        if recording_state.current_segment:
             self.end_segment()
 
-        self.is_recording = False
-        self.record_button.setEnabled(self.is_connected)
+        recording_state.is_recording = False
+        self.record_button.setEnabled(connection_state.is_connected)
         self.stop_button.setEnabled(False)
         self.clear_plots_button.setEnabled(True)
         self.start_segment_button.setEnabled(False)
         self.end_segment_button.setEnabled(False)
-        self.profile_button.setEnabled(self.is_connected)
-        self.reset_profile_button.setEnabled(self.is_connected)
-        self.save_preset_button.setEnabled(self.is_connected)
-        self.load_preset_button.setEnabled(self.is_connected and self.profile_preset_combo.count() > 0)
+        self.profile_button.setEnabled(connection_state.is_connected)
+        self.reset_profile_button.setEnabled(connection_state.is_connected)
+        self.save_preset_button.setEnabled(connection_state.is_connected)
+        self.load_preset_button.setEnabled(connection_state.is_connected and self.profile_preset_combo.count() > 0)
         self._update_sleep_prevention_state()
         self._set_recording_indicator_active(False)
-        self._update_status_label(self.port_combo.currentText() if self.is_connected else "")
+        self._update_status_label(self.port_combo.currentText() if connection_state.is_connected else "")
 
         self._flush_csv(force=True)
         self.csv_flush_timer.stop()
@@ -1054,22 +1192,23 @@ class MainWindow(QMainWindow):
             self.csv_file.close()
         self.csv_file = None
         self.csv_writer = None
-        self.pending_csv_rows = 0
-        if self.recording_temp_path and self.recording_path:
+        recording_state.pending_csv_rows = 0
+        if recording_state.recording_temp_path and recording_state.recording_path:
             try:
-                self.recording_temp_path.replace(self.recording_path)
+                recording_state.recording_temp_path.replace(recording_state.recording_path)
             except OSError as exc:
                 self.log(f"Failed to finalize recording file: {exc}")
-        self.recording_temp_path = None
-        self.log(f"Recording stopped: {self.recording_path}")
+        recording_state.recording_temp_path = None
+        self.log(f"Recording stopped: {recording_state.recording_path}")
 
     def start_segment(self) -> None:
-        if not self.is_recording or self.current_segment is not None:
+        recording_state = self.app_state.recording
+        if not recording_state.is_recording or recording_state.current_segment is not None:
             return
 
-        self.segment_counter += 1
-        self.current_segment = SegmentState(
-            segment_id=f"seg_{self.segment_counter:03d}",
+        recording_state.segment_counter += 1
+        recording_state.current_segment = SegmentState(
+            segment_id=f"seg_{recording_state.segment_counter:03d}",
             label=self.label_edit.text().strip() or "unlabeled",
             target_ppm=self.target_ppm_edit.text().strip() or "",
             start_iso=datetime.now().isoformat(timespec="seconds"),
@@ -1079,20 +1218,21 @@ class MainWindow(QMainWindow):
         self.end_segment_button.setEnabled(True)
         self._update_segment_bands()
         self.log(
-            f"Segment started: {self.current_segment.segment_id} "
-            f"label={self.current_segment.label} target_ppm={self.current_segment.target_ppm}"
+            f"Segment started: {recording_state.current_segment.segment_id} "
+            f"label={recording_state.current_segment.label} target_ppm={recording_state.current_segment.target_ppm}"
         )
 
     def end_segment(self) -> None:
-        if not self.current_segment:
+        recording_state = self.app_state.recording
+        if not recording_state.current_segment:
             return
 
-        self.current_segment.end_iso = datetime.now().isoformat(timespec="seconds")
-        self.current_segment.end_elapsed = self._latest_elapsed()
-        self.log(f"Segment ended: {self.current_segment.segment_id}")
-        self.completed_segments.append(self.current_segment)
-        self.current_segment = None
-        self.start_segment_button.setEnabled(self.is_recording)
+        recording_state.current_segment.end_iso = datetime.now().isoformat(timespec="seconds")
+        recording_state.current_segment.end_elapsed = self._latest_elapsed()
+        self.log(f"Segment ended: {recording_state.current_segment.segment_id}")
+        recording_state.completed_segments.append(recording_state.current_segment)
+        recording_state.current_segment = None
+        self.start_segment_button.setEnabled(recording_state.is_recording)
         self.end_segment_button.setEnabled(False)
         self._update_segment_bands()
 
